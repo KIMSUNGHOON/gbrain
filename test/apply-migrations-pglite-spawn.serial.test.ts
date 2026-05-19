@@ -25,11 +25,39 @@
  * Serial because it spawns subprocesses + writes a tmpdir.
  */
 import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, chmodSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
+
+/**
+ * Make a shim `gbrain` binary that routes to `bun run <repo>/src/cli.ts`.
+ *
+ * The v0.11.0 orchestrator chain spawns subprocesses via `execSync('gbrain
+ * jobs smoke')` and `execSync('gbrain init --migrate-only')` (the Postgres
+ * path; PGLite now routes in-process, but phase B's smoke still shells out).
+ * On a developer machine `gbrain` resolves via `bun link`; on CI it
+ * doesn't exist on PATH and execSync fails with "command not found",
+ * propagating up as an orchestrator failure. The shim avoids the global-
+ * install dependency.
+ */
+function makeGbrainShim(): { binDir: string; cleanup: () => void } {
+  const binDir = mkdtempSync(join(tmpdir(), 'gbrain-shim-'));
+  const shimPath = join(binDir, 'gbrain');
+  writeFileSync(
+    shimPath,
+    `#!/bin/sh\nexec bun run ${REPO}/src/cli.ts "$@"\n`,
+    { mode: 0o755 },
+  );
+  chmodSync(shimPath, 0o755);
+  return {
+    binDir,
+    cleanup: () => {
+      try { rmSync(binDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    },
+  };
+}
 
 async function runCli(
   args: string[],
@@ -63,6 +91,7 @@ describe('apply-migrations on fresh PGLite (v0.36.1.x #1100)', () => {
   // pay it 4 times here, not 8.
   test('init --migrate-only → apply-migrations --yes → re-run → --list (all exit 0)', async () => {
     const home = mkdtempSync(join(tmpdir(), 'gbrain-pglite-spawn-'));
+    const shim = makeGbrainShim();
     try {
       mkdirSync(join(home, '.gbrain'), { recursive: true });
       writeFileSync(
@@ -73,7 +102,15 @@ describe('apply-migrations on fresh PGLite (v0.36.1.x #1100)', () => {
           embedding_dimensions: 1536,
         }) + '\n',
       );
-      const env = { HOME: home, GBRAIN_HOME: home };
+      // PATH shim so orchestrator phase-B execSync('gbrain jobs smoke')
+      // and similar resolve to our shim instead of requiring a global
+      // install. This matches the contract users hit in production
+      // (gbrain on PATH) without depending on `bun link` having run.
+      const env = {
+        HOME: home,
+        GBRAIN_HOME: home,
+        PATH: `${shim.binDir}:${process.env.PATH ?? ''}`,
+      };
 
       // Step 1: init --migrate-only seeds the schema. Pre-fix on PGLite this
       // worked but the next step then deadlocked.
@@ -115,6 +152,7 @@ describe('apply-migrations on fresh PGLite (v0.36.1.x #1100)', () => {
       expect(list.stdout + list.stderr).toMatch(/applied|pending|migration/i);
     } finally {
       try { rmSync(home, { recursive: true, force: true }); } catch { /* best effort */ }
+      shim.cleanup();
     }
   }, 480_000);
 });
