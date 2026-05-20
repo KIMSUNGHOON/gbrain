@@ -433,7 +433,7 @@ async function cmdScorecard(engine: BrainEngine, args: string[]): Promise<void> 
     return;
   }
 
-  // v0.37.0.1: don't hide the unresolvable signal. A brain with only unresolvable
+  // v0.37.2.0: don't hide the unresolvable signal. A brain with only unresolvable
   // verdicts still has a story to tell — "your judge tried but couldn't decide" —
   // and the spec's whole headline ("50% of your tech calls land unresolvable")
   // depends on this output rendering when resolved=0 but unresolvable_count>0.

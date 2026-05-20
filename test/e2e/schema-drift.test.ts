@@ -76,7 +76,7 @@ describe.skipIf(skip)('schema drift: PGLite ↔ Postgres post-initSchema parity 
     await pglite.initSchema();
 
     // Postgres side: ensure the test database is FRESH before initSchema.
-    // v0.37.0.1 fix: previously the test trusted the caller to pass a fresh
+    // v0.37.2.0 fix: previously the test trusted the caller to pass a fresh
     // DATABASE_URL, but `gbrain doctor` (used by the CLAUDE.md E2E bootstrap
     // ritual) populates `content_chunks.model DEFAULT` from the configured
     // gateway model. On a re-run, `CREATE TABLE IF NOT EXISTS` is a no-op so
@@ -84,7 +84,7 @@ describe.skipIf(skip)('schema drift: PGLite ↔ Postgres post-initSchema parity 
     // engine fallback. That produced a phantom drift unrelated to schema
     // parity.
     //
-    // SAFETY GATE (codex P0, tightened in v0.37.0.1): DROP SCHEMA public CASCADE is
+    // SAFETY GATE (codex P0, tightened in v0.37.2.0): DROP SCHEMA public CASCADE is
     // destructive. The db name MUST always look test-shaped — no env-var override
     // bypasses that floor. GBRAIN_TEST_DB=1 only relaxes the localhost requirement
     // so CI environments where the host is a service name (e.g. "postgres") can

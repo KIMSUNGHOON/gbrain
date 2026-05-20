@@ -311,7 +311,7 @@ at `~/.claude/plans/system-instruction-you-are-working-rippling-knuth.md`.
 Convention skill at `skills/conventions/calibration.md` has the agent-
 facing rules.
 
-**v0.37.0.1 hotfix (2026-05-19, migration v79)** — `takes_resolution_consistency`
+**v0.37.2.0 hotfix (2026-05-19, migration v79)** — `takes_resolution_consistency`
 CHECK widened to accept `quality='unresolvable' AND outcome=NULL` as the 4th
 valid resolution state. Column-level CHECK on `resolved_quality` renamed to
 `takes_resolved_quality_values` and widened to enumerate all 4 states. Unblocks

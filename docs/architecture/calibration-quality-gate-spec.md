@@ -3,7 +3,7 @@
 > **Historical context.** This is the source spec absorbed from PR #1191 into
 > two waves of implementation:
 >
-> - **v0.37.0.1 hotfix** (this release): widens the `takes_resolution_consistency`
+> - **v0.37.2.0 hotfix** (this release): widens the `takes_resolution_consistency`
 >   CHECK constraint to accept `quality='unresolvable'` as a 4th valid state.
 >   Unblocks the production grading script. Adds `unresolvable_count` +
 >   `unresolvable_rate` to `TakesScorecard` as sibling fields (preserves

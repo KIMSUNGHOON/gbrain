@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.37.0.1] - 2026-05-19
+## [0.37.2.0] - 2026-05-19
 
 **Your grading script writes "unresolvable" verdicts now. Before this fix, every single one was rejected at the database layer — 0 of 34 writes landed in a recent production run.**
 
@@ -17,7 +17,7 @@ Hotfix-narrow. No prompt changes, no LLM dependencies, no eval gates. Rebased on
 
 ### Numbers that matter
 
-| Metric | Before v0.37.0.1 | After v0.37.0.1 |
+| Metric | Before v0.37.2.0 | After v0.37.2.0 |
 |---|---|---|
 | `quality='unresolvable'` writes accepted | 0% (CHECK violation) | 100% |
 | Production v3 run write rate | 0 / 34 | 34 / 34 |
@@ -33,7 +33,7 @@ Two CHECK constraints lived on the `takes` table after v0.36.1.0:
 
 Existing rows are unaffected. The `(NULL, NULL)`, `('correct', true)`, `('incorrect', false)`, and `('partial', NULL)` shapes still satisfy both new CHECKs. ALTER TABLE briefly acquires `AccessExclusiveLock` to validate existing rows — on a 36K-row takes table this is sub-second. Larger brains (>1M rows) may see a few seconds of write blocking during migration.
 
-### To take advantage of v0.37.0.1
+### To take advantage of v0.37.2.0
 
 `gbrain upgrade` runs migration v79 automatically. If your grading script was failing today:
 
@@ -58,7 +58,7 @@ If anything still fails, file an issue at https://github.com/garrytan/gbrain/iss
 ### Itemized changes
 
 #### Schema
-- **`src/core/migrate.ts`** — new migration v79 `takes_unresolvable_quality_v0_37_0_1`. Idempotent. Drops + re-adds both the column-level CHECK (now named `takes_resolved_quality_values`) and the table-level `takes_resolution_consistency` CHECK with `'unresolvable'` admitted. Renumbered from v74 → v79 during the master-merge collision when v0.37.0.0 landed master's autonomous-remediation wave through v78.
+- **`src/core/migrate.ts`** — new migration v79 `takes_unresolvable_quality_v0_37_2_0`. Idempotent. Drops + re-adds both the column-level CHECK (now named `takes_resolved_quality_values`) and the table-level `takes_resolution_consistency` CHECK with `'unresolvable'` admitted. Renumbered from v74 → v79 during the master-merge collision when v0.37.0.0 landed master's autonomous-remediation wave through v78.
 
 #### Engine surface
 - **`src/core/engine.ts`** — `Take.resolved_quality` widens to `'correct' | 'incorrect' | 'partial' | 'unresolvable' | null`. `TakeResolution.quality` widens to the same 4-state union. `TakesScorecard` gains two new sibling fields: `unresolvable_count: number` and `unresolvable_rate: number | null`. Existing fields (`resolved`, `correct`, `incorrect`, `partial`, `accuracy`, `brier`, `partial_rate`) unchanged.
@@ -73,7 +73,7 @@ If anything still fails, file an issue at https://github.com/garrytan/gbrain/iss
 - **`test/migrate.test.ts`** — four structural assertions on the v79 entry (name, idempotency, both CHECK widenings, regression guard that pre-existing legal pairs aren't dropped) plus six PGLite E2E cases exercising the round-trip: R1 unresolvable persists, R2 pre-v79 `(NULL, NULL)` survives, R3 partial+true still rejected, R4 unresolvable+true/false still rejected, R5 `getScorecard` surfaces the new sibling fields.
 
 #### Docs
-- **`docs/architecture/calibration-quality-gate-spec.md`** — preserved from PR #1191 (now closed) with a historical-context header noting the two-wave split. v0.37.0.1 ships the CHECK fix; the follow-up feature wave ships the rest.
+- **`docs/architecture/calibration-quality-gate-spec.md`** — preserved from PR #1191 (now closed) with a historical-context header noting the two-wave split. v0.37.2.0 ships the CHECK fix; the follow-up feature wave ships the rest.
 
 #### For contributors
 - The v0.36.1.0 calibration phases (`propose_takes`, `grade_takes`, `calibration_profile`) were correct: `grade-takes.ts` already returned `null` for unresolvable verdicts so they didn't try to write to the takes table. The bug was external grading scripts (and the future promote path, when it lands) writing the verdict directly. The hotfix lets either path land the same row shape.

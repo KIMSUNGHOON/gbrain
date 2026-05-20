@@ -3686,8 +3686,8 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     version: 79,
-    name: 'takes_unresolvable_quality_v0_37_0_1',
-    // v0.37.0.1 hotfix — accepts quality='unresolvable' as a 4th valid
+    name: 'takes_unresolvable_quality_v0_37_2_0',
+    // v0.37.2.0 hotfix — accepts quality='unresolvable' as a 4th valid
     // resolution state. Unblocks production grading scripts that write the
     // 4th verdict type (the judge in grade-takes returns
     // correct|incorrect|partial|unresolvable, but v37's CHECKs only allowed

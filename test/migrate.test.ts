@@ -1611,7 +1611,7 @@ describe('resolveSessionTimeouts — env var overrides', () => {
   });
 });
 
-// ─── v0.37.0.1 — v79 takes_unresolvable_quality_v0_37_0_1 ──────────────────
+// ─── v0.37.2.0 — v79 takes_unresolvable_quality_v0_37_2_0 ──────────────────
 //
 // Hotfix that unblocks the production grading script. Widens BOTH:
 //   (a) the table-level takes_resolution_consistency CHECK to accept
@@ -1621,12 +1621,12 @@ describe('resolveSessionTimeouts — env var overrides', () => {
 // Renumbered v74→v79 during master merge (autonomous-remediation wave
 // claimed v68-v78 before this hotfix landed).
 
-describe('migrate v79 — takes_unresolvable_quality_v0_37_0_1', () => {
+describe('migrate v79 — takes_unresolvable_quality_v0_37_2_0', () => {
   const v79 = MIGRATIONS.find(m => m.version === 79);
 
   test('v79 entry exists with the documented name', () => {
     expect(v79).toBeDefined();
-    expect(v79!.name).toBe('takes_unresolvable_quality_v0_37_0_1');
+    expect(v79!.name).toBe('takes_unresolvable_quality_v0_37_2_0');
   });
 
   test('v79 is marked idempotent so re-runs are safe', () => {

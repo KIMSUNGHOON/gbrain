@@ -282,7 +282,7 @@ export interface TakesScorecard {
    */
   unresolvable_count?: number;
   /**
-   * v0.37.0.1: `unresolvable_count / (resolved + unresolvable_count)`. NULL
+   * v0.37.2.0: `unresolvable_count / (resolved + unresolvable_count)`. NULL
    * when both are 0. Surfaces the spec's headline calibration signal:
    * "what fraction of grade-attempted takes couldn't be graded?" — high
    * values signal weak evidence retrieval rather than wrong predictions.
