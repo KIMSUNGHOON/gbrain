@@ -740,6 +740,14 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
   deleted_at              TIMESTAMPTZ,
   source_id               TEXT REFERENCES sources(id) ON DELETE RESTRICT,
   federated_read          TEXT[] NOT NULL DEFAULT '{}',
+  -- v0.38 Slice 2 + 3: per-OAuth-client budget cap (v83) + agent binding (v84).
+  -- bound_* columns are NULL on legacy clients (no agent scope by default).
+  budget_usd_per_day      NUMERIC(10, 2) NULL,
+  bound_tools             TEXT[] NULL,
+  bound_source_id         TEXT NULL,
+  bound_brain_id          TEXT NULL,
+  bound_slug_prefixes     TEXT[] NULL,
+  bound_max_concurrent    INTEGER NOT NULL DEFAULT 1,
   created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 -- v0.34.1 (#861, D13 + #876): source_id is the OAuth client's write-source
