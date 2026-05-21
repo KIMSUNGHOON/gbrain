@@ -1,4 +1,5 @@
 import matter from 'gray-matter';
+import { safeLoad as yamlSafeLoad } from 'js-yaml';
 import type { PageType } from './types.ts';
 import { slugifyPath } from './sync.ts';
 
@@ -217,8 +218,14 @@ function collectValidationErrors(
   }
 
   // 5. NESTED_QUOTES — common breakage pattern: `title: "Name "Nick" Last"`.
-  //    Detect any frontmatter `key: ...` line whose value contains 3 or more
-  //    unescaped double-quote characters. A clean quoted value has 2.
+  //    The heuristic: a frontmatter `key: value` line with 3+ unescaped
+  //    double-quote characters is suspicious. But raw quote-counting is
+  //    too dumb: a YAML flow sequence like `tags: ["yc", "w2025"]` has
+  //    4 unescaped `"` by design (valid), and a single-quoted scalar
+  //    like `title: 'a: "b" "c"'` has literal inner `"` (also valid).
+  //    Disambiguate by running js-yaml on just the value; only flag
+  //    lines that genuinely fail to parse. The full-frontmatter YAML
+  //    parse error is caught separately by check 6 (YAML_PARSE) below.
   for (let i = firstNonEmpty + 1; i < closeLine; i++) {
     const line = lines[i];
     const m = line.match(/^\s*[A-Za-z_][\w-]*\s*:\s*(.*)$/);
@@ -228,7 +235,20 @@ function collectValidationErrors(
     for (let j = 0; j < value.length; j++) {
       if (value[j] === '"' && (j === 0 || value[j - 1] !== '\\')) count++;
     }
-    if (count >= 3) {
+    if (count < 3) continue;
+
+    // 3+ unescaped quotes — could be valid YAML (flow seq, single-quoted
+    // scalar with inner quotes, bare scalar with embedded quotes) or
+    // genuinely broken. Parse the value to disambiguate.
+    let isValidYaml = false;
+    try {
+      yamlSafeLoad(value);
+      isValidYaml = true;
+    } catch {
+      // YAML parse failed — line is genuinely broken
+    }
+
+    if (!isValidYaml) {
       errors.push({
         code: 'NESTED_QUOTES',
         message: 'Nested double quotes in YAML value (use single quotes for the outer)',

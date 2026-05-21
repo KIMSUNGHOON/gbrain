@@ -135,6 +135,50 @@ describe('parseMarkdown validation surface', () => {
     });
   });
 
+  // The validator's count-of-quotes heuristic is too dumb: it flagged
+  // valid YAML flow sequences (the v0.x 6,981-error class on Garry's
+  // brain) and single-quoted scalars with literal inner quotes. The
+  // fallback runs js-yaml.safeLoad on suspicious values; only flags
+  // genuinely unparseable lines.
+  describe('NESTED_QUOTES — YAML-aware fallback', () => {
+    test('flow sequence with quoted tags does NOT trigger (6,981-error regression guard)', () => {
+      const md = `${fence}\ntype: concept\ntitle: x\ntags: ["yc", "w2025", "ai"]\n${fence}\n\nbody`;
+      const parsed = parseMarkdown(md, undefined, { validate: true });
+      expect(parsed.errors!.filter(e => e.code === 'NESTED_QUOTES')).toHaveLength(0);
+    });
+
+    test('single-quoted scalar with literal inner double quotes does NOT trigger', () => {
+      // value: 'a: "b" "c" "d"' — 6 unescaped " by raw count, but valid YAML
+      const md = `${fence}\ntype: concept\ntitle: 'a: "b" "c" "d"'\n${fence}\n\nbody`;
+      const parsed = parseMarkdown(md, undefined, { validate: true });
+      expect(parsed.errors!.filter(e => e.code === 'NESTED_QUOTES')).toHaveLength(0);
+    });
+
+    test('escaped-as-single-pair quotes inside flow seq do NOT trigger', () => {
+      const md = `${fence}\ntype: concept\ntitle: x\ntags: ["Men''s Fashion", "yc"]\n${fence}\n\nbody`;
+      const parsed = parseMarkdown(md, undefined, { validate: true });
+      expect(parsed.errors!.filter(e => e.code === 'NESTED_QUOTES')).toHaveLength(0);
+    });
+
+    test('genuinely broken nested quotes STILL trigger', () => {
+      // Outer " followed by stray inner " — yaml.safeLoad throws.
+      const md = `${fence}\ntype: concept\ntitle: "Foo "bar" baz "qux" end"\n${fence}\n\nbody`;
+      const parsed = parseMarkdown(md, undefined, { validate: true });
+      expect(parsed.errors!.map(e => e.code)).toContain('NESTED_QUOTES');
+    });
+
+    test('unclosed bracket on a suspicious line STILL surfaces some parse error', () => {
+      // Either NESTED_QUOTES (line-level parse fail) or YAML_PARSE
+      // (whole-frontmatter parse fail) — never silent.
+      const md = `${fence}\ntype: concept\ntitle: x\ntags: ["yc", "w2025"\n${fence}\n\nbody`;
+      const parsed = parseMarkdown(md, undefined, { validate: true });
+      const broken = parsed.errors!.filter(
+        e => e.code === 'NESTED_QUOTES' || e.code === 'YAML_PARSE'
+      );
+      expect(broken.length).toBeGreaterThan(0);
+    });
+  });
+
   describe('EMPTY_FRONTMATTER', () => {
     test('--- --- with nothing between', () => {
       const md = `${fence}\n${fence}\n\nbody`;

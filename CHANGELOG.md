@@ -134,6 +134,123 @@ Credited contributors per the CHANGELOG attribution convention; closing comments
    https://github.com/garrytan/gbrain/issues with `gbrain doctor`
    output + contents of `~/.gbrain/upgrade-errors.jsonl` if it exists.
 
+## [0.37.6.0] - 2026-05-20
+
+**One key, many hosted models.**
+
+You can now configure `openrouter:<provider>/<model>` directly in gbrain. OpenRouter proxies OpenAI, Anthropic, Google, DeepSeek, Meta, Qwen, and dozens of other hosted models through one OpenAI-compatible endpoint with one API key. Instead of juggling per-provider keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, DEEPSEEK_API_KEY, etc.), you set `OPENROUTER_API_KEY` once and pick the model at call time. Embedding goes through too, defaulting to `openai/text-embedding-3-small` with Matryoshka shrink to 512/768/1024.
+
+OpenRouter shows up in `gbrain providers list` as the 16th recipe (alphabetical between Ollama and OpenAI). Your traffic gets attributed to gbrain on OR's leaderboard via `HTTP-Referer` + `X-OpenRouter-Title` headers; if you're running gbrain inside a different agent stack (a downstream agent, your own fork, anything else) set `OPENROUTER_REFERER` + `OPENROUTER_TITLE` so your traffic gets attributed to you instead.
+
+**How to turn it on**
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...
+gbrain providers list | grep -i openrouter           # see the new recipe
+gbrain providers env openrouter                      # see all OR-related env vars
+gbrain config set chat_model openrouter:anthropic/claude-sonnet-4.6
+gbrain config set embedding_model openrouter:openai/text-embedding-3-small
+gbrain config set embedding_dimensions 1024          # Matryoshka, optional
+```
+
+For forks attributing their own traffic:
+
+```bash
+export OPENROUTER_REFERER=https://your-app.example
+export OPENROUTER_TITLE="Your App"
+```
+
+**A few sharp edges to know about**
+
+- **Subagent loops stay Anthropic-direct.** gbrain's subagent infrastructure (the long tool-calling loop that powers `gbrain agent run`) is hard-pinned to Anthropic-direct because crash-replay needs stable `tool_use_id` blocks across attempts and OR's response normalization doesn't guarantee that. `openrouter:anthropic/claude-haiku-4.5` works fine for chat; it gets rejected at subagent submit time. Keep an Anthropic key if you use `gbrain agent`.
+- **Per-model context limits vary.** The OR catalog spans 128K to 1M+ context windows. The recipe declares no recipe-wide `max_context_tokens` — upstream errors surface per-model.
+- **Catalog churns.** The 8 curated chat slugs in the recipe (gpt-5.2, gpt-5.5, claude-haiku-4.5, claude-sonnet-4.6, claude-opus-4.7, gemini-3-flash-preview, deepseek-chat) are starting points, not a closed enum. Pass any OR model ID and it routes through; check https://openrouter.ai/models for the live catalog.
+
+**Under the hood — `default_headers` seam on Recipe**
+
+To ship attribution headers cleanly, this release adds a generic `Recipe.default_headers` (static) and `Recipe.resolveDefaultHeaders?(env)` (env-templated) seam. Headers from these fields ride alongside the existing Bearer auth on every openai-compatible touchpoint (embedding, expansion, chat, reranker). Two guards fire at `applyResolveAuth` time: declaring both fields throws `AIConfigError` (mutual exclusion); a default header that would shadow the auth header (`Authorization`, or any custom-header recipe's auth key) also throws. Together/Groq/any future recipe can opt into the same seam in a follow-up.
+
+The reranker HTTP path at `gateway.ts:2281` now merges both `Authorization: Bearer <key>` AND `auth.headers` (where default_headers flow) into the request's Headers map. Pre-fix the ternary picked one or the other; default_headers would have been silently dropped on the manual rerank path.
+
+**What's tested**
+
+Four new test files prove the seam reaches the wire, not just the return shape:
+
+- `test/ai/recipe-openrouter.test.ts` — 11 cases: recipe shape, Matryoshka `dims_options: [512, 768, 1024, 1536]`, `max_batch_tokens: 300_000` (OpenAI aggregate per-request cap, not per-input), arbitrary-ID acceptance, `resolveDefaultHeaders` defaults + env override, setup_hint coverage.
+- `test/ai/header-transport.test.ts` — 3 cases: synthetic recipes with custom `fetch` wrappers capture outgoing headers on `embed()`, `chat()`, and `rerank()`. Asserts Authorization + HTTP-Referer + X-OpenRouter-Title + X-Title all reach the wire.
+- `test/ai/recipes-existing-regression.test.ts` — IRON RULE preserved + 6 new contract cases for the `default_headers`/`resolveDefaultHeaders` merge and both safety guards.
+- `test/ai/build-gateway-config.test.ts` — 7 cases pinning the 5-way env-baseURL passthrough (LLAMA_SERVER, OLLAMA, LMSTUDIO, LITELLM, OPENROUTER) through the now-exported `buildGatewayConfig`. Mops up pre-existing untested drift on four legacy env vars in the same pass.
+
+Cherry-picked from [#1210](https://github.com/garrytan/gbrain/pull/1210). Contributed by @davemorin; corrections from an outside-voice review (Codex) folded in: recipe count math (16 not 17), current OR attribution header name (`X-OpenRouter-Title` preferred, `X-Title` back-compat), `max_batch_tokens` semantic (aggregate not per-input), Matryoshka dims for `text-embedding-3-small`, and the auth-shadow guard at `applyResolveAuth`.
+
+## To take advantage of v0.37.6.0
+
+`gbrain upgrade` should do this automatically. If it didn't, or if you want to verify the recipe shipped:
+
+1. **Check the recipe is registered:**
+   ```bash
+   gbrain providers list | grep -i openrouter
+   ```
+2. **Check env-var reporting:**
+   ```bash
+   OPENROUTER_API_KEY=fake-test gbrain providers env openrouter
+   ```
+   Should list `OPENROUTER_API_KEY` (required), `OPENROUTER_BASE_URL`, `OPENROUTER_REFERER`, `OPENROUTER_TITLE` (optional).
+3. **Smoke-test embeddings against a real key:**
+   ```bash
+   export OPENROUTER_API_KEY=sk-or-...
+   gbrain providers test --model openrouter:openai/text-embedding-3-small
+   ```
+4. **If any step fails,** file an issue at https://github.com/garrytan/gbrain/issues with the output of `gbrain doctor`.
+
+## [0.37.5.0] - 2026-05-20
+
+**`gbrain doctor` stops flagging your tags as broken when they're not.**
+
+If you have a tag line like `tags: ["yc", "w2025", "ai"]` in your frontmatter, that's perfectly valid YAML. The doctor used to flag it anyway. One user with a 105K-page brain saw 6,981 of these flagged at once. The fix: the validator now parses suspicious values with a real YAML parser before complaining. Valid YAML stops getting flagged. Genuinely broken titles like `title: "Foo "bar" baz"` still get caught.
+
+**How to use it**
+
+```bash
+gbrain upgrade
+gbrain doctor --json | jq '.checks[]
+  | select(.name=="frontmatter_integrity")
+  | .breakdown.NESTED_QUOTES'
+```
+
+The NESTED_QUOTES count on your brain should drop toward zero on next `gbrain doctor`. No data rewrite needed. No `gbrain frontmatter generate --fix` sweep. The existing files are already valid YAML.
+
+**Why this is the right layer**
+
+`@garrytan-agents` opened PR #1217 with a one-line fix to the emitter side: switch tag serialization from `JSON.stringify` (double-quoted) to single-quoted YAML. That made the headline 6,981-error case go away by changing what new writes look like. But Codex's outside-voice review during planning caught a deeper bug: even with a perfect emitter, the validator at `src/core/markdown.ts:219-238` was a raw quote counter (`count(unescaped ")  >= 3 => error`) that doesn't understand YAML at all. It would still flag a clean single-quoted scalar like `title: 'a: "b" "c"'` (6 unescaped `"` characters, but valid YAML). The fix had to land on the dumb side, not the emitter side.
+
+PR #1217 was closed; thanks to @garrytan-agents for the 6,981-error signal that exposed the underlying class.
+
+**What's safe to know about**
+
+- The fix is additive. Lines with `< 3` unescaped quotes still pass instantly (existing fast path). Only suspicious lines pay the per-line YAML parse, and only when count >= 3 (rare on healthy data).
+- `js-yaml@3.14.2` is now a direct dependency (was transitive via gray-matter). Adding a direct pin so a future gray-matter major bump can't yank the import.
+- The frontmatter emitter at `src/core/frontmatter-inference.ts` is unchanged. Existing tag style (`tags: ["yc"]`) is now correctly recognized as valid; the cosmetic consistency with `brain-writer.ts:184`'s single-quote repair style is a follow-up TODO, not part of this fix.
+
+### Itemized changes
+
+#### Fixed
+
+- `src/core/markdown.ts:219-238` — NESTED_QUOTES validator now disambiguates via `js-yaml.safeLoad`. The count-of-quotes heuristic stays as a fast path; suspicious lines (count >= 3) are parsed before being flagged. Closes the 6,981-error class for any brain whose frontmatter has been valid all along.
+- `js-yaml` declared as a direct dependency in `package.json`; `@types/js-yaml` added to devDependencies. `bun.lock` re-resolves the transitive entry to a top-level pin (no version change).
+
+#### Added
+
+- 5 new YAML-aware regression cases in `test/markdown-validation.test.ts`:
+  - flow sequence with quoted tags does NOT trigger (6,981-error regression guard)
+  - single-quoted scalar with literal inner double quotes does NOT trigger
+  - escaped-as-`''` quotes inside flow seq do NOT trigger
+  - genuinely broken nested quotes STILL trigger
+  - unclosed bracket STILL surfaces NESTED_QUOTES or YAML_PARSE (never silent)
+
+#### For contributors
+
+- `js-yaml` is now an explicit direct dep. New code that needs YAML emission/parsing should import from it directly rather than relying on gray-matter's transitive resolution.
 ## [0.37.4.0] - 2026-05-20
 
 **A nightly safety net for the bug class that bit gbrain 10 times in 2 years.**
