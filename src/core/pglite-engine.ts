@@ -13,6 +13,7 @@ import type {
   TakesScorecard, TakesScorecardOpts, CalibrationBucket, CalibrationCurveOpts,
   FactRow, FactKind, FactVisibility, FactInsertStatus,
   NewFact, FactListOpts, FactsHealth,
+  SourceRow,
 } from './engine.ts';
 import { MAX_SEARCH_LIMIT, clampSearchLimit } from './engine.ts';
 import { runMigrations } from './migrate.ts';
@@ -875,6 +876,55 @@ export class PGLiteEngine implements BrainEngine {
        ORDER BY source_id, slug`
     );
     return (rows as { slug: string; source_id: string }[]).map(r => ({ slug: r.slug, source_id: r.source_id }));
+  }
+
+  async listAllSources(opts?: {
+    includeArchived?: boolean;
+    localPathOnly?: boolean;
+  }): Promise<SourceRow[]> {
+    // v0.38: parity with postgres-engine.listAllSources. Defaults match
+    // sources-ops.listSources (archived rows filtered out by default).
+    // localPathOnly skips pure-DB sources so autopilot fan-out doesn't
+    // dispatch jobs that would fall back to the global sync.repo_path.
+    const includeArchived = opts?.includeArchived === true;
+    const localPathOnly = opts?.localPathOnly === true;
+    const { rows } = await this.db.query<{
+      id: string;
+      name: string | null;
+      local_path: string | null;
+      last_sync_at: string | null;
+      config: unknown;
+    }>(
+      `SELECT id, name, local_path, last_sync_at, config
+         FROM sources
+        WHERE ($1::boolean OR archived IS NOT TRUE)
+          AND ($2::boolean OR local_path IS NOT NULL)
+        ORDER BY (id = 'default') DESC, id`,
+      [includeArchived, !localPathOnly],
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      local_path: r.local_path,
+      last_sync_at: r.last_sync_at ? new Date(r.last_sync_at) : null,
+      config: typeof r.config === 'string'
+        ? JSON.parse(r.config) as Record<string, unknown>
+        : ((r.config as Record<string, unknown> | null) ?? {}),
+    }));
+  }
+
+  async updateSourceConfig(sourceId: string, patch: Record<string, unknown>): Promise<boolean> {
+    // v0.38: parity with postgres-engine.updateSourceConfig. JSONB `||`
+    // concat operator (overrides same-key, no deep merge). PGLite passes
+    // `JSON.stringify(patch)` as the param; cast to jsonb on the SQL side.
+    const result = await this.db.query<{ id: string }>(
+      `UPDATE sources
+          SET config = COALESCE(config, '{}'::jsonb) || $1::jsonb
+        WHERE id = $2
+        RETURNING id`,
+      [JSON.stringify(patch), sourceId],
+    );
+    return result.rows.length > 0;
   }
 
   // v0.37.0 — domain-bank engine methods (D14 + D5 + D10).

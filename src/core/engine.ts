@@ -42,6 +42,20 @@ import type {
  * truncation can compare `result.length` against expected fanout bounds
  * as a coarse-but-honest signal in the interim.
  */
+/**
+ * v0.38: bare row shape returned by `BrainEngine.listAllSources()`.
+ * Kept lean (no per-source page_count) so the autopilot tick stays O(1)
+ * SQL queries regardless of source count. `sources-ops.SourceListEntry`
+ * is the enriched application-layer shape.
+ */
+export interface SourceRow {
+  id: string;
+  name: string | null;
+  local_path: string | null;
+  last_sync_at: Date | null;
+  config: Record<string, unknown>;
+}
+
 export interface TraverseGraphOpts {
   sourceId?: string;
   sourceIds?: string[];
@@ -631,6 +645,44 @@ export interface BrainEngine {
    * `forEachPage` from src/core/engine-iter.ts instead.
    */
   listAllPageRefs(): Promise<Array<{ slug: string; source_id: string }>>;
+
+  /**
+   * v0.38 — lean per-source enumeration for hot-loop callers (autopilot
+   * dispatch, doctor freshness check). Returns the bare row shape sources-ops
+   * needs without the N+1 per-source page_count enrichment in
+   * `sources-ops.listSources`.
+   *
+   * Defaults filter out archived sources. When `localPathOnly` is true,
+   * also filters `local_path IS NOT NULL` so the autopilot fan-out doesn't
+   * dispatch jobs for pure-DB sources whose handler would fall back to
+   * the global sync.repo_path (codex r1 P1-4).
+   *
+   * `config` is returned as `Record<string, unknown>` — both engines
+   * already parse the JSONB at the boundary (Postgres-js returns
+   * parsed objects; PGLite returns objects via its built-in JSONB
+   * codec). Callers reading `config['last_full_cycle_at']` get a string.
+   */
+  listAllSources(opts?: {
+    includeArchived?: boolean;
+    localPathOnly?: boolean;
+  }): Promise<SourceRow[]>;
+
+  /**
+   * v0.38 — atomic JSONB merge into sources.config. Uses Postgres's
+   * `config || $patch::jsonb` operator so concurrent writers don't
+   * stomp each other (last write wins, but no read-modify-write race).
+   *
+   * Primary caller: runCycle's exit hook writes
+   *   { last_full_cycle_at: '<ISO>' }
+   * after a successful per-source cycle so autopilot's freshness gate
+   * can read it next tick. Resolves codex round-1 P0-5 (write site for
+   * last_full_cycle_at was unspecified pre-PR).
+   *
+   * Returns true if a row was updated (source exists), false otherwise
+   * (silently no-ops on unknown sourceId — caller decides whether that's
+   * a problem).
+   */
+  updateSourceConfig(sourceId: string, patch: Record<string, unknown>): Promise<boolean>;
 
   /**
    * v0.37.0 — prefix-stratified page sampling for `gbrain brainstorm` / `gbrain lsd`
