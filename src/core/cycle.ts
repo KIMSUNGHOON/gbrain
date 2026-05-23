@@ -560,7 +560,14 @@ function checkAborted(signal?: AbortSignal): void {
 
 // ─── Phase runners ─────────────────────────────────────────────────
 
-async function runPhaseLint(brainDir: string, dryRun: boolean): Promise<PhaseResult> {
+// v0.39 — runPhaseLint + runPhaseBacklinks are exported for the cycle-
+// legacy-phases test (audit GAP 5 / D9). Exporting widens the public API
+// surface; consumers outside of runCycle should NOT take a dependency on
+// these — they exist for the cycle's internal composition. The export
+// keyword is the minimal seam that lets behavioral tests drive the
+// wrapper's result-mapping (counter → status enum + summary) without
+// going through runCycle's full setup cost.
+export async function runPhaseLint(brainDir: string, dryRun: boolean): Promise<PhaseResult> {
   try {
     const { runLintCore } = await import('../commands/lint.ts');
     const result = await runLintCore({ target: brainDir, fix: true, dryRun });
@@ -594,7 +601,7 @@ async function runPhaseLint(brainDir: string, dryRun: boolean): Promise<PhaseRes
   }
 }
 
-async function runPhaseBacklinks(brainDir: string, dryRun: boolean): Promise<PhaseResult> {
+export async function runPhaseBacklinks(brainDir: string, dryRun: boolean): Promise<PhaseResult> {
   try {
     // Maintenance cycles must not rewrite tracked brain pages with generated
     // "Referenced in" timeline bullets. The graph extractor/auto-link path is
