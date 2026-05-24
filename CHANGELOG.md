@@ -92,6 +92,112 @@ After migrating, retire wintermute's parallel atom-pipeline-coordinator + atom-b
 - Parity-baseline eval gates against wintermute outputs on 500-page sample.
 - Wintermute-side cleanup (`atom-pipeline-coordinator` retire + SKILL.md shrinks) lives in `~/git/wintermute`, not this repo.
 
+## [0.40.8.1] - 2026-05-23
+
+**The README and tutorials are rewritten for someone who has never touched GBrain.** The front-door docs now read as a story you can understand cold: what GBrain does, what it looks like, how to install it, two real walkthroughs that take you from zero to a working brain. No internal jargon, no version archaeology, no assumed context.
+
+The big rewrite covers:
+
+- **README lead** rewritten in first-person voice. Opens with "Search gives you raw pages. GBrain gives you the answer." Frames GBrain as both a personal brain and a company brain, with a link to YC's company-brain Request for Startups.
+- **"What this looks like" section** is now a concrete meeting-prep scenario any professional gets cold: you ask "what do I need to know before my meeting with Alice tomorrow?", you see what a typical retrieval tool returns (a list of 5 pages), you see what GBrain returns (a synthesized briefing with citations and a gap-analysis note). No eval jargon, no judge scores, just the two answers side by side. Closes with "search finds the pages, the brain reads them for you and writes the answer."
+- **New `## Tutorials` section** in the README. Replaces the prior `## Recent Releases` changelog summary (that lives in this file, where it belongs).
+- **New `## Your brain's shape (schema packs)` section** in the README explains the dynamic-schema cathedral in plain English: drop your Notion export or your custom layout, run `gbrain schema detect`, the brain adapts to your shape instead of forcing you to learn its.
+- **All version chatter stripped from the README body.** Per the iron rule "the README should read as the current docs written for people who have never known GBrain before." Version history belongs in this file.
+
+Two new end-to-end tutorials in `docs/tutorials/`:
+
+- **`personal-brain.md`** — the canonical full-stack solo install. Two GitHub repos, a Telegram bot, AlphaClaw on Render, OpenClaw + GBrain + Supabase. About two hours, $100-$150 a month. Includes the three Supabase gotchas every install hits (turn on the `vector` extension, use the connection pooler not the direct connection, buy the IPv4 add-on).
+- **`company-brain.md`** — extends the personal brain into a multi-user shared brain for a 10-50 person team. Federated sources with OAuth-scoped per-user reads, per-person folder conventions, per-person crons, per-person skills, the Slack integration callout (two-cron architecture, channel-to-task-ID mapping, deterministic links, dismissed-items state), and the botmaster onboarding pattern (pre-populate each teammate's slice → walk them through 2-3 wow flows → graduate them to DM only after the wow moment lands).
+- New tutorial-roadmap index at `docs/tutorials/README.md` listing what shipped and what's planned (connect-your-agent, VC dealflow brain, vault migration, code brain, fully-local brain, dream-cycle setup).
+
+Cross-linked from the relevant architecture docs (`docs/INSTALL.md` for the install-path readers, `docs/architecture/topologies.md` for the design-doc readers).
+
+`bun run build:llms` regenerated to pick up the doc structure changes.
+
+### Itemized changes
+
+- `README.md` — first-person lead rewritten; "Search vs Think" section retitled "Two ways to query your brain" (think is a CLI verb, not a brand); company-brain framing paragraph added with YC RFS link; Tutorials section added; `## Your brain's shape (schema packs)` section added; `## Recent Releases` section removed (changelog summary belongs in CHANGELOG.md); all `(v0.X+)` version cites stripped from body; proper-noun capitalization sweep (`alice` → `Alice` in prose, slug forms unchanged); the visceral before/after example rewritten as a universal meeting-prep scenario with zero internal jargon.
+- `docs/tutorials/personal-brain.md` (new) — solo install walkthrough sourced from the live setup session notes. ~2000 words. Includes the three Supabase gotchas (pgvector, connection pooler, IPv4 add-on) in their own subsection.
+- `docs/tutorials/company-brain.md` (new) — multi-user walkthrough, restructured as a true superset of personal-brain (no duplicated install steps). ~5000 words. Covers two scoping models (separate sources with OAuth scoping vs `partners/<slug>/` directory convention in one source), shared rule files at the skills root (`_brain-filing-rules.md`, `_excluded-people.md`, `_output-rules.md`), Slack wiring conventions, and the botmaster onboarding pattern.
+- `docs/tutorials/README.md` (new) — tutorial-roadmap index page.
+- `docs/INSTALL.md` — pointer to the company-brain tutorial in the shared/multi-machine deployment section.
+- `docs/architecture/topologies.md` — pointer to the tutorials directory in the "See also" section.
+- `docs/ethos/ORIGIN.md` — closing paragraph naming the synthesis layer as the reason the brain is worth building.
+- `llms-full.txt` + `llms.txt` — regenerated.
+
+## [0.40.8.0] - 2026-05-23
+
+**Your doctor checks, your operations trust boundary, and your cycle phases now have real behavioral tests — not just source-grep guards.**
+
+Before this release, three of gbrain's load-bearing surfaces shipped with structural tests only: the 50+ doctor checks were verified by grepping source code for check names; the 74 MCP operations were checked for scope annotations but no test proved that `localOnly: true` actually keeps an op off the HTTP wire; and the cycle phases that compose the maintenance loop had no test pinning their result-mapping (counter → status enum). When a refactor accidentally dropped a check or flipped a localOnly flag, the existing tests stayed green. The v0.38.2.0 partial-scan wave was one example — a render bug slipped through because no test drove the doctor orchestrator end-to-end.
+
+This wave adds the missing behavioral coverage. `gbrain doctor --json` now has a subprocess smoke test that runs the full render path against a fresh PGLite tempdir brain and asserts the schema_version=2 envelope, the status enum, and the check list integrity. The doctor's check-building logic was extracted into a small `buildChecks` function so behavioral tests can drive it directly without `process.exit` getting in the way — the wrapper still handles all 10 process.exit sites unchanged, snapshot-pinned so accidental check drop-outs fail loudly at PR review time. The operations trust-boundary surface gets a table-driven contract test over all 74 ops plus targeted handler-invocation regressions for the three historically-broken classes (HTTP MCP shell-job RCE, search_by_image image_path leak, plus the lint contract that file_upload's strict-mode confinement holds). A new shell guard in the `bun run verify` chain catches any future HTTP-exposing module that imports the operations list without applying the `localOnly` filter — the bypass that motivated the v0.26.9 hardening pass.
+
+Two pre-existing master-test flakes get root-caused as part of the same wave: `test/ai/gateway.test.ts` was leaking `OPENAI_API_KEY=openai-fake` into the gateway's module-scoped state, poisoning sibling tests in the same shard that called real `embed()` paths (afterAll cleanup added); and `test/ai/header-transport.test.ts` raced its synthetic recipe registration with sibling files that also mutated the gateway, returning `'[]'` instead of `'ok'` under shard parallelism (file quarantined as `.serial.test.ts`). Neither was a regression from this branch — both were latent bugs that surfaced because the new fast-loop coverage exercised more of the surface concurrently.
+
+### How to take advantage of v0.40.8.0
+
+The added coverage is invisible at runtime. There's nothing to enable or configure — your next `bun run test` already includes 39 new test cases pinning the doctor, operations, and cycle contracts. If you've been wondering whether to trust `gbrain doctor`'s output after a refactor, the new behavioral tests are now the answer.
+
+If you maintain a downstream gbrain fork or extension that imports from `core/operations.ts`, run `bun run check:operations-filter-bypass` once. It'll catch any of your modules that brought the `operations` value in without applying the canonical `.filter(op => !op.localOnly)` filter — three import shapes are detected (destructured, aliased, namespace).
+
+### Itemized changes
+
+#### Doctor refactor (no behavior change, full coverage)
+
+- **`src/commands/doctor.ts:1604` — extract `buildChecks(engine, args, dbSource): Promise<Check[]>` from `runDoctor`.** The check-building logic moves into the new exported function; the existing exported `computeDoctorReport(checks)` at line 78 stays untouched. `runDoctor` is now a thin wrapper: `buildChecks → computeDoctorReport → render + process.exit`. All 10 `process.exit` sites stay where they are (lines 2199, 2220, the 5 inside `--locks` mode, and the remediation subcommands). The two early-return paths (no engine, connection failure) drop their inline `outputResults + process.exit` calls and `return checks` instead — the wrapper still produces identical observable output because both render the same partial check list.
+
+- **`test/doctor-behavioral.test.ts` (new, 13 cases).** Drives `buildChecks` against PGLite. Pure pure-aggregation cases pin `computeDoctorReport` math: 1 fail → -20 points, 3 fails → -60, mixed ok+warn+fail → unhealthy with the fail outcome dominating, score clamped at 0. Orchestrator cases assert `--fast` flag honors the skip set, `--json` arg doesn't alter the check list, the no-engine path returns a partial list without calling `process.exit`, and the snapshot of load-bearing check names (`connection`, `schema_version`, `brain_score`, `sync_freshness`, `search_mode`, `eval_drift`, `reranker_health`, `embedding_width_consistency`, `autopilot_lock_scope`) catches any accidental check drop-out during future refactors.
+
+- **`test/doctor-cli-smoke.serial.test.ts` (new, 1 case).** Subprocess smoke spawning `bun run src/cli.ts doctor --json` against a fresh PGLite tempdir brain via `GBRAIN_HOME=$(mktemp -d)`. Asserts exit code 0 on a freshly-initialized brain, the JSON envelope parses, `schema_version === 2`, `status` is one of `healthy`/`warnings`/`unhealthy`, and `checks` is a non-empty array. Catches render-path bugs that buildChecks-only tests miss — the class the v0.38.2.0 partial-scan wave exposed. Skip via `GBRAIN_SKIP_SUBPROCESS_TESTS=1` for shard-time control; quarantined as `.serial.test.ts` because PGLite write-locks don't play well with parallel runners.
+
+#### Operations trust-boundary contract
+
+- **`test/operations-trust-boundary.test.ts` (new, 14 cases).** Hybrid design: pure assertions over all 74 ops cover the cheap drift-detection win (every op has a scope annotation; every mutating op has a non-read scope; scope is one of the documented enum values; `hasScope(['read'], op.scope)` correctly rejects when op.scope is 'admin' or 'write'). Plus the canonical filter contract: every `localOnly: true` op is excluded from `operations.filter(op => !op.localOnly)`. Plus targeted handler-invocation cases for the two historically-broken HTTP-callable classes: `submit_job` with `name='shell'` + `ctx.remote=true` MUST reject (the F7b HTTP MCP shell-job RCE class), and `search_by_image` with `image_path` + `ctx.remote=true` MUST reject (the D18 P0 image-leak class). `file_upload` and `sync_brain` are deliberately omitted from handler-invocation tests because they're `localOnly: true` — calling their handlers directly would test an impossible production path (codex CMT-3 caught this during plan review). The seven historically-sensitive `localOnly` ops are snapshot-pinned by name: `sync_brain`, `file_upload`, `file_list`, `file_url`, `purge_deleted_pages`, `get_recent_transcripts`, `code_traversal_cache_clear`.
+
+- **`scripts/check-operations-filter-bypass.sh` (new shell guard, wired into `bun run verify`).** Greps `src/` for any module that imports the `operations` value from `core/operations.ts` outside the canonical filter site at `src/commands/serve-http.ts`. Three import shapes are detected: destructured (`import { operations }`), aliased (`import { operations as ops }`), and namespace (`import * as opsModule`). An explicit allow-list of 10 known-safe importers (CLI, dispatch, stdio MCP, the older http-transport, the tool-def helper, the subagent registry, three CLI tools, and serve-http itself) is documented with a one-line rationale per entry. Plus a check that `serve-http.ts` still contains the literal `operations.filter(op => !op.localOnly)` expression — refactoring it out fails the build. Type-only imports of sibling exports like `sourceScopeOpts` and `OperationContext` are deliberately not flagged.
+
+#### Cycle phase wrappers
+
+- **`src/core/cycle.ts:518, 552` — export `runPhaseLint` + `runPhaseBacklinks`.** Adds the `export` keyword to two existing phase functions so behavioral tests can drive them directly. No body changes; no behavior change. Documented as internal helpers exposed for test-only consumption — downstream code should NOT take a dependency on them.
+
+- **`test/cycle-legacy-phases.test.ts` (new, 11 cases).** Combined file with two `describe` blocks for `runPhaseLint` + `runPhaseBacklinks`. Narrowed to result-mapping + error envelope per codex CMT-1 (the legacy phases don't extend `BaseCyclePhase` and don't take a progress reporter or AbortSignal directly, so the contract surface they actually have is the counter → status enum mapping plus the try/catch error envelope). Cases: clean run → status='ok' with summary format, partial fix → status='warn' with `dryRun` in details, dry-run path doesn't write, throw-from-lib → status='fail' with the wrapper's try/catch envelope populated (verified that the throw doesn't escape). Future phase wrappers (sync, extract, embed, orphans, extract_facts, resolve_symbol_edges, recompute_emotional_weight) land as additional describes here, not as new files.
+
+#### Pre-existing master flakes — root-cause fixes (not bandaids)
+
+- **`test/ai/gateway.test.ts` — add `afterAll(() => resetGateway())` cleanup hook.** The file's tests each call `beforeEach(() => resetGateway())` so per-test pollution within the file was handled. But the file's LAST test set `configureGateway({env: {OPENAI_API_KEY: 'openai-fake'}})` and left that state in the gateway module. Other test files in the same bun shard (notably `test/ingestion/ingest-capture.test.ts`) then called code paths that triggered `embed()` without first calling `configureGateway`, hit the real OpenAI endpoint with the leaked fake key, and returned `Incorrect API key provided: openai-fake`. The shard wedged. One-line fix at file teardown stops the leak.
+
+- **`test/ai/header-transport.serial.test.ts` — quarantined from the parallel fast loop (renamed from `header-transport.test.ts`).** The file mutates `RECIPES` (the gateway's module-scoped recipe map) and `configureGateway` to register synthetic recipes, then asserts that `fakeChatFetch` was invoked. Under bun's intra-shard parallelism, sibling files like `test/ai/rerank.test.ts` and `test/gateway-embed-model-override.test.ts` race the same gateway state — the chat test would see `result.text === '[]'` instead of `'ok'` because a parallel test called `resetGateway` between this test's `configureGateway` and its `chat` call. The `.serial.test.ts` rename moves the file out of the parallel pass into the serial-after pass at `--max-concurrency=1` per repo convention.
+
+### Honest notes
+
+Three of the original 10 audit gaps turned out to be non-gaps after surveying the actual repo state — `test/ingestion/{dedup,daemon,skillpack-load}.test.ts` and `test/phantom-redirect.test.ts` already existed with thorough coverage (88 ingestion tests, 38 phantom-redirect tests, all green). The audit was based on stale information. The four real gaps (doctor behavioral, cycle phase wrappers, operations trust-boundary contract, shell guard for HTTP filter) all shipped.
+
+Four follow-up TODOs filed (in the plan file, not TODOS.md yet):
+- NEW-1: per-check leaf unit tests for the 20+ exported doctor check functions (codex CMT-2 deep fix)
+- NEW-2: cycle-phase wrappers for the other 7 phases (sync, extract, embed, orphans, extract_facts, resolve_symbol_edges, recompute_emotional_weight)
+- NEW-3: HTTP-level trust-boundary E2E that proves serve-http.ts honors the localOnly filter at runtime (codex CMT-3 strongest defense)
+- NEW-4: render function extraction from runDoctor (would let doctor-cli-smoke move back into the parallel fast loop)
+## [0.40.7.2] - 2026-05-23
+
+**TODOS.md gets a wave-commitments register at the top.** A `/plan-ceo-review` + `/plan-eng-review` pass clustered the 110 open TODOs into 12 feature themes, articulated the platonic ideal for each, and surfaced three strategic decisions. All three landed on the most ambitious option, and the seven verified-absent items the analysis caught got filed. Nothing in `src/` changed.
+
+The new top section in TODOS.md is the canonical register for the next wave; the rest of the file is unchanged. Plan analysis at `~/.claude/plans/system-instruction-you-are-working-dazzling-pnueli.md` documents the cluster taxonomy + methodology caveats + 7 grep-verified missing items.
+
+## To take advantage of v0.40.7.2
+
+No action required — this is a docs-only release. The wave commitments below land in TODOS.md and inform what `v0.41` and `v0.42` ship. Merged into master after v0.40.7.0 (Schema Cathedral v3); bumped from 0.40.6.1 to 0.40.7.2 to clear the queue.
+
+### Itemized changes
+
+#### TODOS register at top of TODOS.md
+
+- **D1 — v0.41 Eval-loop wave (3× P0):** `gbrain eval gate <baseline>` CI verb (the single most load-bearing missing item across all 12 clusters), contributor-mode eval capture ON by default with airtight privacy, wire nightly quality probe into autopilot scheduler. Substrate is 80% built; the LOOP is 10% wired. These three close the loop.
+- **D2 — Code-indexing promoted to P1 (5 items):** `.sql` file indexing (#1173), Magika auto-detect for extension-less files, full `doc_comment` extraction at chunk time, cross-file edge resolution (Layer 5 precision), code-signature retrieval (per-language). gbrain commits to peer-of-Cursor/Sourcegraph posture.
+- **D3 — v0.42 Non-Latin script wave (5 items):** Postgres CJK FTS via pgroonga/zhparser, widen CJK ranges to Unicode property escapes, CJK-aware overlap context in chunker, Thai/Arabic/Cyrillic/Devanagari support, `git diff --name-status -z` NUL framing. gbrain commits to global-by-design.
+- **Verified-missing items (8):** `gbrain sources promote`, `--explain` auto-on during `gbrain eval replay`, extend `gbrain remote doctor` to stream audit JSONL, new `gbrain costs` command, `gbrain jobs explain <id>`, `docs/security/threat-model.md` catalog, `gbrain doctor --thin-client` parity probe, `gbrain models migrate`. Each grep-verified absent before filing.
+
+Five items duplicate older entries lower in TODOS.md (`.sql` indexing, Magika, doc_comment, CJK items) — duplication noted inline. The new top section is the canonical wave-commitment register; historical entries stay as detail.
 ## [0.40.7.0] - 2026-05-23
 
 **Your agents can now author your brain's schema pack themselves — no more shell-out, no more hand-editing YAML.** If you've ever opened `gbrain` and noticed thousands of pages stuck as untyped "notes" under `meetings/` or `research/`, this release closes that loop. Tell Wintermute (or any agent connected via MCP) "my brain has 4000 untyped meetings pages — add a `meeting` type and backfill them," and it does the whole thing safely: locks the pack file so two agents can't race, validates the change won't create dangling references, writes atomically so a crash never leaves the pack half-written, audits the mutation with the agent's identity, then updates every matching page in 1000-row batches that never wedge concurrent writers. The cathedral that was bundled but unreachable in v0.39 is now reachable from the outside.

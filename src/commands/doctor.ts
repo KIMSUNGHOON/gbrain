@@ -2098,23 +2098,37 @@ export async function checkCycleFreshness(
  * user has no DB configured anywhere; otherwise the caller chose --fast or
  * we failed to connect despite a configured URL.
  */
-export async function runDoctor(engine: BrainEngine | null, args: string[], dbSource?: DbUrlSource) {
+/**
+ * Build the full check list for `gbrain doctor` against an engine + arg vector.
+ *
+ * The check-building seam: takes the same args as `runDoctor` minus the
+ * --locks shortcut (locks-mode is a focused diagnostic the CLI wrapper
+ * handles separately). Returns a `Check[]` array; the caller renders it
+ * via `outputResults` and decides exit code. Early-exit cases (no engine,
+ * connection failure) return a partial check array without calling
+ * `process.exit` directly — the caller still renders + exits.
+ *
+ * v0.39 narrow-seam extract (audit-driven). The 10 `process.exit` sites
+ * in this file all live in CLI wrappers (`runDoctor`, `runLocksCheck`,
+ * the remediation subcommands). Behavioral tests drive `buildChecks`
+ * directly via PGLite; the wrapper-level subprocess smoke in
+ * `test/doctor-cli-smoke.test.ts` covers the render + exit paths that
+ * a unit test can't reach in-process.
+ *
+ * Side effects retained inside buildChecks (kept for "no behavior change"):
+ *   - `printAutoFixReport` on `--fix` non-JSON path
+ *   - `progress` reporter writes to stderr (heartbeats per check)
+ *   - `engine.executeRaw` / handler-leaf calls (the actual probe work)
+ */
+export async function buildChecks(
+  engine: BrainEngine | null,
+  args: string[],
+  dbSource?: DbUrlSource,
+): Promise<Check[]> {
   const jsonOutput = args.includes('--json');
   const fastMode = args.includes('--fast');
   const doFix = args.includes('--fix');
   const dryRun = args.includes('--dry-run');
-  const locksMode = args.includes('--locks');
-
-  // --locks is a focused diagnostic: it runs the same pg_stat_activity
-  // query that `runMigrations` pre-flight uses, prints any idle-in-tx
-  // backends, and exits. Used by a user (or the migrate.ts error 57014
-  // message) who just hit a statement_timeout and needs to find the
-  // blocker. Referenced from migrate.ts's 57014 diagnostic — that
-  // message promised this flag exists.
-  if (locksMode) {
-    await runLocksCheck(engine, jsonOutput);
-    return;
-  }
 
   const checks: Check[] = [];
   let autoFixReport: AutoFixReport | null = null;
@@ -2716,9 +2730,10 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
       }
       checks.push({ name: 'connection', status: 'warn', message: msg });
     }
-    const earlyFail1 = outputResults(checks, jsonOutput);
-    process.exit(earlyFail1 ? 1 : 0);
-    return;
+    // Early return: caller renders the partial check list + decides exit code.
+    // Pre-v0.39 this site called outputResults + process.exit directly; the
+    // narrow-seam extract moved both to the runDoctor CLI wrapper.
+    return checks;
   }
 
   // DB checks phase — start a single reporter phase so agents see which
@@ -2735,9 +2750,10 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
     const msg = e instanceof Error ? e.message : String(e);
     checks.push({ name: 'connection', status: 'fail', message: msg });
     progress.finish();
-    const earlyFail2 = outputResults(checks, jsonOutput);
-    process.exit(earlyFail2 ? 1 : 0);
-    return;
+    // Early return: caller renders the partial check list + decides exit code.
+    // Pre-v0.39 this site called outputResults + process.exit directly; the
+    // narrow-seam extract moved both to the runDoctor CLI wrapper.
+    return checks;
   }
 
   // 4. pgvector extension
@@ -4481,6 +4497,42 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
 
   progress.finish();
 
+  return checks;
+}
+
+/**
+ * CLI entry point for `gbrain doctor`. Thin wrapper around buildChecks +
+ * computeDoctorReport + render + process.exit.
+ *
+ * Concerns kept here (not pushed into buildChecks):
+ *   - --locks shortcut (focused diagnostic; calls runLocksCheck + returns)
+ *   - outputResults render (stdout)
+ *   - features teaser (non-JSON, non-failing only)
+ *   - process.exit (10 sites total across runDoctor + runLocksCheck +
+ *     runRemediationPlan + runRemediate)
+ *
+ * v0.39 narrow-seam extract — buildChecks is the unit-testable seam, this
+ * wrapper is the wallclock + exit-code concerned function. See
+ * test/doctor-behavioral.test.ts for the in-process seam coverage and
+ * test/doctor-cli-smoke.test.ts for the subprocess wrapper coverage.
+ */
+export async function runDoctor(
+  engine: BrainEngine | null,
+  args: string[],
+  dbSource?: DbUrlSource,
+) {
+  const jsonOutput = args.includes('--json');
+  const locksMode = args.includes('--locks');
+
+  // --locks is a focused diagnostic: it runs the same pg_stat_activity
+  // query that `runMigrations` pre-flight uses, prints any idle-in-tx
+  // backends, and exits. Referenced from migrate.ts's 57014 diagnostic.
+  if (locksMode) {
+    await runLocksCheck(engine, jsonOutput);
+    return;
+  }
+
+  const checks = await buildChecks(engine, args, dbSource);
   const hasFail = outputResults(checks, jsonOutput);
 
   // Features teaser (non-JSON, non-failing only)
