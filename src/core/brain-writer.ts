@@ -442,7 +442,12 @@ export async function scanBrainSources(
     const src = sources[i];
     // Between-source abort check: AbortSignal works here (no sync I/O blocking
     // the event loop at this boundary). For mid-walk interruption use deadline.
-    if (opts.signal?.aborted || (opts.deadline && Date.now() > opts.deadline)) {
+    // `>=` not `>`: when Date.now() lands exactly on the deadline boundary,
+    // the budget IS exhausted — proceeding to scanOneSource would let the
+    // next source eat its own budget on top of what's already been spent.
+    // (Strict `>` was a real flake source on CI: GitHub Actions runners
+    // landing on the boundary exactly during a Promise.race timeout.)
+    if (opts.signal?.aborted || (opts.deadline && Date.now() >= opts.deadline)) {
       // Codex adversarial review #3: when deadline fires BETWEEN sources,
       // also stamp aborted_at_source with the source we were about to start.
       // Pre-fix, the doctor message said "PARTIAL SCAN" with no source name.
@@ -500,7 +505,11 @@ export async function scanBrainSources(
     // status='partial' with files_scanned=0, which is misleading ("partial
     // scan" when actually nothing was scanned). Mark this source + remainder
     // as 'skipped' so the doctor message is honest.
-    if (opts.signal?.aborted || (opts.deadline && Date.now() > opts.deadline)) {
+    // `>=` matches the between-source check above (line 445). The Promise.race
+    // setTimeout resolves null at exactly `remainingMs` from now, so post-await
+    // Date.now() often equals deadline within integer-ms precision — strict `>`
+    // missed those landings on CI and let the next scanOneSource run anyway.
+    if (opts.signal?.aborted || (opts.deadline && Date.now() >= opts.deadline)) {
       if (abortedAtSource === null) {
         abortedAtSource = src.id;
       }

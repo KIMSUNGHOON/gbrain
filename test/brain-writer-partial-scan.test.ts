@@ -177,15 +177,16 @@ describe('scanBrainSources partial-scan state', () => {
   // Codex adversarial #4 regression: even when dbPageCountForSource itself
   // would hang indefinitely, the Promise.race against the deadline must
   // resolve null and the scan must abort cleanly.
+  //
+  // Boundary fix (CI flake): brain-writer.ts post-await deadline check uses
+  // `>=` not `>`. The Promise.race setTimeout resolves at exactly
+  // `remainingMs` from now, so post-await Date.now() often equals deadline
+  // within integer-ms precision. Strict `>` missed those landings on CI
+  // runners and let scanOneSource run anyway, marking src-a as 'scanned'
+  // instead of 'skipped'. Test budget is generous enough to absorb runner
+  // timer drift; the real fix is the operator change in brain-writer.ts.
   test('hanging COUNT does not exceed deadline — Promise.race timeout fires', async () => {
     const start = Date.now();
-    // CI timing fix: bumped deadline 100→500ms + bound 500→2500ms. On GitHub
-    // Actions runners under shard parallelism, the Node.js timer driving
-    // Promise.race can drift well past 100ms (observed: 187ms on a single
-    // CI run with no obvious load). The test asserts behavior under the
-    // deadline-fires path, not a specific budget value — so widening the
-    // window keeps the intent and removes the flake. The 5x ratio (deadline
-    // 500 / bound 2500) is unchanged.
     const DEADLINE_MS = 500;
     const BOUND_MS = 2500;
     const report = await scanBrainSources(engine, {
