@@ -107,7 +107,7 @@ async function withoutAnthropicKey<T>(body: () => Promise<T>): Promise<T> {
 //   v0.33   — added `resolve_symbol_edges` between extract and patterns
 //   v0.36.1.0 — added propose_takes + grade_takes + calibration_profile
 //   v0.39.0.0 — added `schema-suggest` between orphans and purge
-//   v0.42.0.0 — added `extract_atoms` after extract_facts + `synthesize_concepts` after patterns
+//   v0.41.2.0 — added `extract_atoms` after extract_facts + `synthesize_concepts` after patterns
 type CyclePhase = (typeof ALL_PHASES)[number];
 const EXPECTED_PHASES: CyclePhase[] = [
   'lint',

@@ -390,7 +390,7 @@ describe('runCycle — yieldBetweenPhases hook', () => {
     // v0.33.3: 13 phases (added `resolve_symbol_edges` between extract_facts and patterns) → 13 yield calls.
     // v0.36.1.0: 16 phases (added `propose_takes`, `grade_takes`, `calibration_profile` between consolidate and embed).
     // v0.39.0.0: 17 phases (added `schema-suggest` between orphans and purge — T12 schema cathedral).
-    // v0.42.0.0: 19 phases (added `extract_atoms` after extract_facts + `synthesize_concepts` after patterns).
+    // v0.41.2.0: 19 phases (added `extract_atoms` after extract_facts + `synthesize_concepts` after patterns).
     expect(hookCalls).toBe(19);
   });
 

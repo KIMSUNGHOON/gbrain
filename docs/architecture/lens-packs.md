@@ -1,4 +1,4 @@
-# Lens packs (v0.42.0.0)
+# Lens packs (v0.41.2.0)
 
 Four bundled schema packs that turn the gbrain dream cycle into a multi-lens
 brain. Activate one with `gbrain config set schema_pack <name>` and the cycle
@@ -80,8 +80,8 @@ calibration_profile produces all 7 domain scorecards in one JSONB.
 
 ## Calibration profile widening (T10)
 
-Before v0.42.0.0, `calibration_profiles.domain_scorecards` was a
-`JSON.stringify({})` placeholder. v0.42.0.0 widens it: each declared
+Before v0.41.2.0, `calibration_profiles.domain_scorecards` was a
+`JSON.stringify({})` placeholder. v0.41.2.0 widens it: each declared
 domain produces a `{n, brier, accuracy, aggregator, page_types,
 extras}` entry. Four aggregator algorithms (closed enum):
 
@@ -127,7 +127,7 @@ investment in Anthropic" can land in BOTH `deal_success` AND
   + the `imported_from` marker so extract_atoms + synthesize_concepts
   don't re-extract already-atomized material.
 
-## v0.42.0.1 follow-ups (filed in plan)
+## v0.41.2.1 follow-ups (filed in plan)
 
 - Per-page-type `frontmatter_validators` on PageTypeSchema so the
   atom_type enum (currently hardcoded in extract_atoms.ts) reads from
