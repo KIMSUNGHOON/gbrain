@@ -1,5 +1,37 @@
 # TODOS
 
+## v0.41.10.0 fix-wave follow-ups (v0.42+)
+
+- [ ] **v0.42+: per-atom idempotency via deterministic atom slug.** The
+  v0.41.10.0 fix wave closed the duplicate-atoms bug class via source-hash
+  existence check at the SOURCE level (skip the whole transcript/page if
+  any atom row exists for `frontmatter.source_hash`). Known limitation
+  surfaced by codex review (D9 #2): if the first Haiku call writes atom
+  1 of 3 then atom 2 throws, the source_hash filter sees atom 1 exists
+  and skips on next discovery — atoms 2 + 3 stay missing until
+  `content_hash` changes. The cleaner solution is per-atom idempotency:
+  switch atom slugs from date-stamped (`atoms/2026-05-25/<title-slug>`)
+  to content-hash-stamped (`atoms/<source_hash16>/<sha8-of-title-body>`)
+  so `engine.putPage` upserts naturally on retry. Bounded scope; needs
+  a migration to consolidate existing duplicate atoms (filed separately
+  below as the v0.42+ consolidation TODO). Priority: P2. References:
+  `src/core/cycle/extract-atoms.ts:atomsExistForHash`, the documented
+  known-limitation comment in the file header.
+
+- [ ] **v0.42+: atom-slug consolidation migration.** The v0.41.10.0 fix
+  wave stops NEW duplicates from being written but doesn't migrate
+  existing duplicate atoms from prior v0.41.2.0 runs. Brains that ran
+  the cycle across multiple days carry duplicate atoms forever (or until
+  manual cleanup): `atoms/2026-05-15/title-X` AND `atoms/2026-05-25/title-X`
+  for the same content_hash. Migration writes a one-shot CLI flow:
+  `gbrain atoms consolidate [--dry-run] [--yes]` that groups atoms by
+  `frontmatter.source_hash`, keeps the oldest atom row, soft-deletes
+  newer copies (uses the existing `softDeletePage` path so 72h restore
+  window applies). Operator opt-in via the same `--confirm-destructive`
+  gate from the destructive-guard. Priority: P3. Filed via /plan-eng-review
+  D6. References: `src/core/cycle/extract-atoms.ts`, the v0.26.5
+  soft-delete + restore infrastructure.
+
 ## community-pr-wave follow-ups (filed during ship)
 
 - [ ] **`FREE_LOCAL_*_PROVIDERS` zero-pricing bypassable via redirected
