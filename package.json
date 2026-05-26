@@ -1,6 +1,6 @@
 {
   "name": "gbrain",
-  "version": "0.41.12.0",
+  "version": "0.41.15.0",
   "description": "Postgres-native personal knowledge brain with hybrid RAG search",
   "type": "module",
   "main": "src/core/index.ts",
@@ -74,6 +74,8 @@
     "check:test-isolation": "scripts/check-test-isolation.sh",
     "check:fuzz-purity": "scripts/check-fuzz-purity.sh",
     "check:operations-filter-bypass": "scripts/check-operations-filter-bypass.sh",
+    "check:fixture-privacy": "scripts/check-fixture-privacy.sh",
+    "check:conversation-parser": "bun src/cli.ts eval conversation-parser test/fixtures/conversation-formats/all.jsonl --no-llm",
     "postinstall": "command -v gbrain >/dev/null 2>&1 && gbrain apply-migrations --yes --non-interactive || echo '[gbrain] postinstall skipped. If installed via bun install -g github:...: run `gbrain doctor` and `gbrain apply-migrations --yes` manually. See https://github.com/garrytan/gbrain/issues/218' 1>&2",
     "prepublish:clawhub": "bun run build:all",
     "publish:clawhub": "clawhub package publish . --family bundle-plugin"

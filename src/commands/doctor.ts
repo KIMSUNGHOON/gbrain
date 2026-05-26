@@ -2914,6 +2914,132 @@ export async function buildChecks(
     }
   }
 
+  // 3d.3 v0.41.13.0 — conversation_format_coverage. Scans up to 200
+  // most-recent conversation-type pages, runs parseConversation in
+  // dry mode, reports per-pattern hit counts + unmatched count. Warn
+  // at >10% unmatched with paste-ready hint pointing at
+  // `gbrain conversation-parser scan <slug>` so the operator can
+  // triage the misses interactively.
+  if (engine) {
+    try {
+      const { parseConversation } = await import('../core/conversation-parser/parse.ts');
+      const allowedTypes = ['conversation', 'meeting', 'slack', 'email'] as const;
+      // PageFilters supports singular `type` only; iterate the 4 types
+      // and cap at ~50/each to land at ~200 total max.
+      const sample: import('../core/types.ts').Page[] = [];
+      for (const t of allowedTypes) {
+        const slice = await engine.listPages({ limit: 50, type: t as import('../core/types.ts').PageType });
+        sample.push(...slice);
+      }
+      if (sample.length === 0) {
+        checks.push({
+          name: 'conversation_format_coverage',
+          status: 'ok',
+          message: 'No conversation-type pages — coverage check not applicable',
+        });
+      } else {
+        const hitsByPattern: Record<string, number> = {};
+        let unmatched = 0;
+        for (const page of sample) {
+          const body = `${page.compiled_truth ?? ''}\n${page.timeline ?? ''}`.trim();
+          const result = parseConversation(body, { page, noPolish: true, noFallback: true });
+          const id = result.matched_pattern_id ?? '_no_match';
+          hitsByPattern[id] = (hitsByPattern[id] ?? 0) + 1;
+          if (result.phase === 'no_match') unmatched++;
+        }
+        const unmatchedPct = (unmatched / sample.length) * 100;
+        const breakdown = Object.entries(hitsByPattern)
+          .sort(([, a], [, b]) => b - a)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(', ');
+        if (unmatchedPct > 10) {
+          checks.push({
+            name: 'conversation_format_coverage',
+            status: 'warn',
+            message:
+              `${unmatched}/${sample.length} conversation pages (${unmatchedPct.toFixed(1)}%) match NO built-in pattern. ` +
+              `Breakdown: ${breakdown}. ` +
+              `Investigate: gbrain conversation-parser scan <slug> | ` +
+              `Enable LLM fallback (opt-in): gbrain config set conversation_parser.llm_fallback_enabled true`,
+          });
+        } else {
+          checks.push({
+            name: 'conversation_format_coverage',
+            status: 'ok',
+            message: `${sample.length} pages: ${breakdown}`,
+          });
+        }
+      }
+    } catch (err) {
+      checks.push({
+        name: 'conversation_format_coverage',
+        status: 'warn',
+        message: `Could not check conversation format coverage: ${(err as Error)?.message ?? String(err)}`,
+      });
+    }
+  }
+
+  // 3d.4 v0.41.13.0 — progressive_batch_audit_health. Reads last 7
+  // days of `~/.gbrain/audit/progressive-batch-YYYY-Www.jsonl` and
+  // surfaces operations that aborted with `abort_*` verdicts so
+  // operators see what went wrong without grep'ing the JSONL by hand.
+  try {
+    const { readRecentProgressiveBatchEvents } = await import(
+      '../core/progressive-batch/audit.ts'
+    );
+    const events = readRecentProgressiveBatchEvents(7);
+    const aborts = events.filter((e) => e.verdict !== 'proceed');
+    if (aborts.length === 0) {
+      checks.push({
+        name: 'progressive_batch_audit_health',
+        status: 'ok',
+        message:
+          events.length === 0
+            ? 'No progressive-batch operations in the last 7 days'
+            : `${events.length} progressive-batch events; 0 aborts`,
+      });
+    } else {
+      const reasonsCounted: Record<string, number> = {};
+      for (const e of aborts) {
+        const key = e.abort_reason ?? e.verdict;
+        reasonsCounted[key] = (reasonsCounted[key] ?? 0) + 1;
+      }
+      const breakdown = Object.entries(reasonsCounted)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(', ');
+      checks.push({
+        name: 'progressive_batch_audit_health',
+        status: 'warn',
+        message:
+          `${aborts.length}/${events.length} progressive-batch events aborted in last 7d. ` +
+          `Breakdown: ${breakdown}. ` +
+          `Inspect: cat ~/.gbrain/audit/progressive-batch-*.jsonl | jq 'select(.verdict != "proceed")'`,
+      });
+    }
+  } catch (err) {
+    checks.push({
+      name: 'progressive_batch_audit_health',
+      status: 'ok',
+      message: `Skipped (audit file unreachable): ${(err as Error)?.message ?? String(err)}`,
+    });
+  }
+
+  // 3d.5 v0.41.13.0 — conversation_parser_probe_health. Mode-gated
+  // per D10: ON when search.mode=tokenmax, opt-in for other modes.
+  // Surface the last 7 days of nightly-probe events; warn on FAIL /
+  // BUDGET_EXCEEDED / adversarial_false_positive.
+  //
+  // v0.41.13.0 ships the probe as opt-in (autopilot wiring deferred
+  // to T7 in the cathedral plan); this check skips with an enable
+  // hint until the probe has at least one audit event written.
+  checks.push({
+    name: 'conversation_parser_probe_health',
+    status: 'ok',
+    message:
+      'Skipped (nightly probe is opt-in; enable with ' +
+      '`gbrain config set autopilot.conversation_parser_probe.enabled true`)',
+  });
+
   // 3e. home_dir_in_worktree (v0.35.8.0). Walks up from `gbrainPath()`
   // looking for a `.git` directory OR file. If found, warns: `~/.gbrain/`
   // lives inside a git worktree, so an accidental `git add` from the

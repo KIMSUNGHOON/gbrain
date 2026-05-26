@@ -35,6 +35,7 @@ import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts'
 import { gbrainPath } from '../core/config.ts';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { VOYAGE_MULTIMODAL_3_PER_IMAGE_CENTS } from '../core/spend-log.ts';
 
 const LOCK_ID = 'gbrain-reindex-multimodal';
 const BATCH_SIZE = 32; // Voyage cap
@@ -206,9 +207,23 @@ export async function runReindexMultimodal(
   const checkpointPath = gbrainPath(CHECKPOINT_FILE);
   const completedIds = loadCheckpoint(checkpointPath);
 
+  // v0.41.13.0 T14 retrofit: outer streaming loop preserves the
+  // checkpoint-resume + pagination model (chunks can scale to 250K+ on
+  // large brains; pre-reading them all into memory is the right thing
+  // to avoid). Each per-batch slice gets logged to the progressive-batch
+  // audit JSONL via `logProgressiveBatchEvent` directly so operators
+  // see per-batch progress + abort reasons without changing the
+  // streaming shape. Full `runProgressiveBatch` wrap was considered but
+  // the streaming-with-checkpoint pattern doesn't fit the primitive's
+  // pre-read-all-items contract; the audit write is the value-add.
+  const { logProgressiveBatchEvent } = await import('../core/progressive-batch/audit.ts');
+  const operationId = Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0');
+  const runStartedAt = Date.now();
+
   try {
     let lastId = 0;
     let processed = 0;
+    let stageIdx = 0;
     while (true) {
       if (opts.limit && processed >= opts.limit) break;
 
@@ -236,6 +251,10 @@ export async function runReindexMultimodal(
         continue;
       }
 
+      const stageStartedAt = Date.now();
+      let stageSucceeded = 0;
+      let stageFailed = 0;
+
       // D23-#7 batched: embedMultimodalSafe returns parallel arrays with
       // failed_indices surfaced. We persist what succeeded and log what
       // failed for the next run to retry.
@@ -254,9 +273,11 @@ export async function runReindexMultimodal(
               WHERE id = ${items[i].id}
             `;
             reembedded++;
+            stageSucceeded++;
             completedIds.add(items[i].id);
           } else {
             failed++;
+            stageFailed++;
           }
         }
       }
@@ -265,7 +286,39 @@ export async function runReindexMultimodal(
       lastId = items[items.length - 1].id;
       saveCheckpoint(checkpointPath, completedIds);
       progress.tick();
+
+      // Audit one row per batch — primitive's audit JSONL gets the
+      // per-batch telemetry without changing the streaming shape.
+      logProgressiveBatchEvent({
+        operation_id: operationId,
+        label: 'reindex.multimodal',
+        stage: 'full',
+        items_in_stage: items.length,
+        items_processed_cumulative: processed,
+        total_items: opts.limit ?? processed,
+        verdict: stageFailed === 0 ? 'proceed' : (stageFailed === items.length ? 'abort_error_rate' : 'proceed'),
+        error_rate: items.length > 0 ? stageFailed / items.length : 0,
+        cost_running_usd: reembedded * VOYAGE_MULTIMODAL_3_PER_IMAGE_CENTS / 100,
+        cost_projected_full_usd: 0, // streaming model: projection unknown until exhausted
+        stage_ms: Date.now() - stageStartedAt,
+      });
+      stageIdx++;
     }
+
+    // Final audit row marking the end of the run.
+    logProgressiveBatchEvent({
+      operation_id: operationId,
+      label: 'reindex.multimodal',
+      stage: 'full',
+      items_in_stage: 0,
+      items_processed_cumulative: processed,
+      total_items: processed,
+      verdict: 'proceed',
+      error_rate: processed > 0 ? failed / processed : 0,
+      cost_running_usd: reembedded * VOYAGE_MULTIMODAL_3_PER_IMAGE_CENTS / 100,
+      cost_projected_full_usd: reembedded * VOYAGE_MULTIMODAL_3_PER_IMAGE_CENTS / 100,
+      stage_ms: Date.now() - runStartedAt,
+    });
   } finally {
     await lockHandle.release().catch(() => {});
     progress.finish();

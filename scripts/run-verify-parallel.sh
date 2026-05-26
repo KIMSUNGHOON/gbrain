@@ -54,6 +54,8 @@ CHECKS=(
   "check:fuzz-purity"
   "check:operations-filter-bypass"
   "check:gateway-routed"
+  "check:fixture-privacy"
+  "check:conversation-parser"
   "typecheck"
 )
 

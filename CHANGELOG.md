@@ -2,6 +2,278 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.41.15.0] - 2026-05-26
+
+**Your brain now understands every common chat format, not just iMessage.**
+
+Before today, GBrain's conversation parser knew one shape:
+`**Name** (date time): text`. If your chat history came from Telegram, Discord,
+WhatsApp, Signal, IRC, Matrix, Teams, or anywhere else, the parser silently
+dropped every message and the dream cycle never extracted any facts. A real user
+reported 134 Telegram pages stuck in this state.
+
+We didn't fix it by adding one regex per format and shipping a release every
+time someone's chat export looked weird. GBrain now ships with a 12-pattern
+built-in registry covering the most common chat-export shapes on Earth, plus an
+opt-in LLM fallback for the long tail. The dream cycle picks the right parser
+per page automatically — no config, no waiting for the next release.
+
+The same wave introduces a new `progressive-batch` primitive (Wintermute-inspired
+ramp-up: trial 10 → 100 → 500 → full with verification at each stage) so future
+batch operations get the discipline for free instead of each reinventing it.
+
+### How to use it
+
+```
+gbrain upgrade                                    # picks up the new parser
+gbrain dream                                      # next cycle extracts facts from previously-stuck chat pages
+gbrain conversation-parser list-builtins          # see the 12 patterns shipped
+gbrain conversation-parser scan conversations/x   # debug which pattern matched (or didn't)
+gbrain eval conversation-parser test/fixtures/conversation-formats/all.jsonl --no-llm
+                                                  # the CI gate; runs in bun run verify
+```
+
+To opt INTO Haiku polish + fallback for the long-tail formats (private chat
+content DOES go to Anthropic when enabled — privacy posture, not just cost):
+
+```
+gbrain config set conversation_parser.llm_polish_enabled true
+gbrain config set conversation_parser.llm_fallback_enabled true
+```
+
+Cost expectation when enabled: ~$0.0002 per polished page, ~$0.0005 per
+fallback call. Bounded by the existing brain-wide `BudgetTracker` cap
+(default $5/cycle).
+
+### The 12 built-in patterns
+
+| id                     | sample                                          |
+|------------------------|-------------------------------------------------|
+| `imessage-slack`       | `**Alice** (2024-03-15 9:00 AM): hi`            |
+| `telegram-bracket`     | `**[18:37] 👤 Alice:** hi` (PR #1461 verbatim)  |
+| `telegram-text-export` | `Alice, [Mar 15, 2024 at 6:37:00 PM]`           |
+| `whatsapp-iso`         | `[15/03/24, 18:37:00] Alice: hi`                |
+| `whatsapp-us`          | `3/15/24, 6:37 PM - Alice: hi`                  |
+| `discord-export`       | `[03/15/2024 6:37 PM] Alice` + multi-line body  |
+| `discord-classic`      | `Alice — Today at 18:37` + multi-line body      |
+| `signal-export`        | `Alice (2024-03-15 18:37:00 UTC): hi`           |
+| `matrix-element`       | `[18:37] @alice:matrix.org: hi`                 |
+| `irc-classic`          | `<alice> hi`                                    |
+| `irc-weechat`          | `18:37 <alice> hi`                              |
+| `teams-export`         | `Alice, 3/15/2024 6:37 PM: hi`                  |
+
+Each pattern was sourced from a public format reference (signal-cli,
+DiscordChatExporter, Telegram Desktop export, WhatsApp export docs, Element
+matrix-archive scripts, irssi / weechat defaults). Every pattern carries
+`test_positive[]` + `test_negative[]` sample sets validated at module load —
+a typo in any built-in regex makes gbrain refuse to start.
+
+### What to watch for after upgrade
+
+- **Timezone handling.** Telegram/Discord/IRC/Matrix have time-only stamps
+  (no date in the line). The parser uses your page frontmatter's `date:` field
+  for the date and assumes UTC for the time unless you ALSO set
+  `timezone: America/Los_Angeles` (IANA zone) in frontmatter. Pages without a
+  frontmatter timezone get a one-time stderr warn so you know the fact
+  timestamps may be off by hours.
+- **Pattern priority scoring.** When multiple built-ins could match a page,
+  the orchestrator scores all candidates across the first 10 lines and picks
+  the highest match rate (declared priority as tie-breaker). Mixed-format
+  pages pick the dominant format — use `gbrain conversation-parser scan
+  <slug>` to see which one won.
+- **doctor checks.** `gbrain doctor` gains three new checks:
+  `conversation_format_coverage` (per-pattern hit count + unmatched %),
+  `progressive_batch_audit_health` (abort-verdict counts from the new
+  primitive's audit JSONL), and `conversation_parser_probe_health` (opt-in
+  nightly LLM-quality drift detection — skipped with enable-hint until you
+  flip the flag).
+
+### What we caught and fixed before merging
+
+Codex's independent review surfaced eight substantive technical risks that
+the eng review missed. All adopted:
+
+- **Privacy posture.** Default-ON LLM polish for private chat logs was the
+  wrong default. Reversed to opt-IN to match the existing
+  `nightly_quality_probe.enabled` precedent.
+- **ReDoS theater.** Promise.race cannot preempt a catastrophic JS regex.
+  v1 drops arbitrary user regex entirely; user patterns wait for v0.42+
+  with worker-isolated regex execution (safe-regex / RE2).
+- **LLM-inferred regex persistence.** Inferring a regex from 20 sampled
+  lines and persisting for future cycles is a silent-corruption machine
+  (real exports have day separators, edits, replies, locale shifts later
+  in the file). LLM fallback parses for THIS page only, cached by
+  content_hash.
+- **Pattern priority scoring.** "First built-in wins" silently mis-routes
+  when formats overlap. Replaced with a 10-line scoring pass.
+- **Timezone policy on every pattern.** Original plan hardcoded `Z`.
+  Now declared per-pattern; time-only formats emit a loud warn.
+- **Verifier shape.** Original `expectedDelta` contract didn't fit
+  reindex / embed / contradiction-eval. Refactored to a discriminated
+  union: `OutputCountVerifier | IdempotentMutationVerifier | NoopVerifier`.
+- **Behavior parity for retrofits.** Sites that previously "jumped
+  straight to full" keep doing so by default; ramp is opt-in per-site.
+- **Real-corpus fixture gap.** v1 ships synthetic fixtures only; real-
+  corpus-redacted fixtures filed as a follow-up TODO.
+
+### Itemized changes
+
+#### New: progressive-batch primitive
+
+- `src/core/progressive-batch/orchestrator.ts` — `runProgressiveBatch(items,
+  verifier, policy, runner)` with verifier+policy injection. Reads
+  `getCurrentBudgetTracker()` ahead of `Policy.maxCostUsd`; null both ways
+  triggers `abort_cost_cap reason='no_budget_safety_net'` (fail-closed).
+- `src/core/progressive-batch/types.ts` — `Stage`, `StageVerdict`,
+  `AbortReason`, discriminated `Verifier` union, `Policy`, `StageReport`.
+- `src/core/progressive-batch/audit.ts` — ISO-week JSONL at
+  `~/.gbrain/audit/progressive-batch-YYYY-Www.jsonl` via the shared
+  `audit-writer` primitive.
+- Env knobs: `GBRAIN_PROGRESSIVE_BATCH_DISABLED=1`,
+  `GBRAIN_PROGRESSIVE_BATCH_AUTO=1`,
+  `GBRAIN_PROGRESSIVE_BATCH_STAGES=10,100,500`.
+
+#### New: conversation-parser cathedral
+
+- `src/core/conversation-parser/{types,builtins,parse,llm-base,llm-polish,llm-fallback,eval,nightly-probe}.ts`
+  — 8 new modules; 12 built-in patterns with module-load validation;
+  `DEFAULT_SPEAKER_CLEAN` exported (the PR #1461 helper, promoted);
+  per-pattern `quick_reject` for O(1) prefix screening; per-pattern
+  `multi_line` flag for Discord-style multi-line bodies; per-pattern
+  `timezone_policy`.
+- `src/commands/extract-conversation-facts.ts` — `parseConversationMessages`
+  becomes a thin wrapper over the new orchestrator. `processPage` threads
+  the full Page through so frontmatter date / timezone / effective_date
+  precedence takes effect. PR #1461's 33 cases pass verbatim.
+
+#### Progressive-batch retrofit landing
+
+Three sites fully retrofitted onto the primitive in this PR (each ships
+with audit JSONL + cost-cap gate):
+- `src/commands/reindex.ts` (T11) — markdown chunker-version sweep.
+- `src/commands/reindex-code.ts` (T12) — code page re-import with
+  BudgetTracker integration preserved.
+- `src/commands/reindex-multimodal.ts` (T14) — streaming-checkpoint
+  shape preserved; per-batch audit row written to the primitive's
+  JSONL.
+
+Six sites documented with v0.41.14.0+ retrofit-deferred notes (each
+file's header explains WHY the bespoke shape needs a dedicated
+design pass): `src/core/post-upgrade-reembed.ts` (T13 — wrapper that
+calls T11 reindex; reindex's primitive wrap is the actual value),
+`src/commands/book-mirror.ts` (T15 — fan-out-to-MinionQueue, not a
+batch loop), `src/core/brainstorm/orchestrator.ts` (T16 — already
+has `withBudgetTracker` + own cost prompt), `src/commands/eval-suspected-contradictions.ts`
+(T17 — sampling probe lives at a different layer than the run loop),
+`src/core/minions/handlers/contextual-reindex-per-chunk.ts` (T18 —
+Minion handler; primitive value lives at submitter side),
+`src/commands/extract.ts` (T19 — pure deterministic regex, no LLM cost
+to gate). Per D26 + D21, behavior parity preservation is the priority;
+each deferred retrofit is filed in TODOS.md with the specific reason
+its shape needs more design.
+
+- `src/core/eval-contradictions/cost-prompt.ts` — marked `@deprecated`
+  for v0.41.14.0+; existing API + caller preserved for behavior parity.
+
+#### New CLI surfaces
+
+- `gbrain eval conversation-parser <fixture.jsonl> [--no-llm] [--min-recall F] [--json]`
+  — exit 0 PASS / 1 FAIL / 2 USAGE.
+- `gbrain conversation-parser scan <slug>` — dry-run on one page.
+- `gbrain conversation-parser list-builtins [--json]` — operator
+  discoverability.
+- `gbrain conversation-parser validate <file>` — v1 emits "deferred to
+  v0.42+" notice.
+
+#### Doctor
+
+- New checks: `conversation_format_coverage`,
+  `progressive_batch_audit_health`, `conversation_parser_probe_health`.
+
+#### CI gates
+
+- `bun run check:fixture-privacy` — banned-token grep over fixtures.
+- `bun run check:conversation-parser` — fixture-corpus eval gate with
+  `--no-llm` (deterministic, no API keys).
+
+#### Schema
+
+- Migration v97 (`conversation_parser_llm_cache_table`) — content-hash-keyed
+  cache for LLM polish + fallback. NO `inferred_patterns` table (codex
+  outside voice correctly identified inferred-regex persistence as a
+  silent-corruption machine).
+
+#### Tests
+
+- 35 unit cases for the progressive-batch primitive (every verdict path).
+- 39 unit cases for the parser orchestrator (PR #1461 6-case verbatim
+  regression, every built-in matches its `test_positive`, priority
+  scoring, date derivation, multi-line, quick_reject, timezone warning).
+- 16 + 6 + 6 unit cases for the LLM base / polish / fallback (provider
+  probe, cache hit, fail-open paths, headroom guard).
+- 7 unit cases for the nightly probe (mode-gated default, rate limit,
+  adversarial false-positive detection).
+- Existing 27 `extract-conversation-facts.test.ts` cases unchanged
+  (back-compat invariant).
+
+### Closed in this wave
+
+- PR #1461 ("feat: support bracket-time format in conversation facts
+  parser") — superseded. Contributor's `BRACKET_TIME_RX` + `cleanSpeaker`
+  survive verbatim as the `telegram-bracket` built-in + `DEFAULT_SPEAKER_CLEAN`
+  export. Co-Authored-By preserved.
+
+### Deferred to v0.41.14.0+ (filed in TODOS.md)
+
+- 9-site progressive-batch retrofit (reindex.ts, reindex-multimodal.ts,
+  reindex-code.ts, post-upgrade-reembed.ts, book-mirror.ts,
+  brainstorm/orchestrator.ts, eval-suspected-contradictions.ts,
+  eval-contradictions/cost-prompt.ts, contextual-reindex-per-chunk.ts).
+  The primitive ships with one proven consumer (parser cathedral);
+  retrofits land as a structured follow-up wave.
+- Worker-based regex isolate-and-kill for arbitrary user patterns.
+- Per-pattern speaker-alias normalization (LongMemEval-style).
+- Cross-modal scoring of LLM-fallback output (catch hallucinations
+  beyond the adversarial fixture set).
+- Per-source pattern overrides
+  (`cycle.conversation_facts_backfill.source_overrides.<id>.patterns`).
+- Real-corpus-redacted fixtures (5-10 production pages scrubbed via
+  one-shot script; production-recovery signal vs synthetic-only).
+
+## To take advantage of v0.41.15.0
+
+`gbrain upgrade` should do this automatically. If it didn't, or if
+`gbrain doctor` warns about a partial migration:
+
+1. **Run the orchestrator manually:**
+   ```bash
+   gbrain apply-migrations --yes
+   ```
+2. **Trigger a dream cycle to extract facts from previously-stuck conversation pages:**
+   ```bash
+   gbrain dream
+   ```
+3. **Verify the outcome:**
+   ```bash
+   gbrain doctor                                          # check conversation_format_coverage
+   gbrain conversation-parser list-builtins               # see the 12 shipped patterns
+   gbrain conversation-parser scan <a-conversation-slug>  # confirm a specific page parses
+   ```
+4. **(Optional) Opt IN to LLM polish + fallback for long-tail formats:**
+   ```bash
+   gbrain config set conversation_parser.llm_polish_enabled true
+   gbrain config set conversation_parser.llm_fallback_enabled true
+   ```
+   This sends chat content to Anthropic. Cost ~$0.0002 per polished page,
+   ~$0.0005 per fallback call. Bounded by your brain-wide `BudgetTracker` cap.
+5. **If any step fails or the numbers look wrong,** please file an issue:
+   https://github.com/garrytan/gbrain/issues with:
+   - output of `gbrain doctor`
+   - output of `gbrain conversation-parser scan <slug>` for a stuck page
+   - which step broke
+
+   This feedback loop is how the gbrain maintainers find fragile upgrade paths. Thank you.
+
 ## [0.41.12.0] - 2026-05-25
 
 **`gbrain ze-switch` no longer silently breaks multimodal search on brains that mix text and image embeddings.**

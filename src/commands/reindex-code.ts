@@ -248,51 +248,90 @@ export async function runReindexCode(
   // then surface the throw as a partial-progress result the caller can
   // re-run. importCodeFile is idempotent (content_hash short-circuit), so
   // a re-run picks up where the cap fired.
+  // v0.41.13.0 T12 retrofit: route through progressive-batch primitive
+  // for audit JSONL + stage telemetry. Cost gating + BudgetTracker scope
+  // are unchanged (this site already has full BudgetTracker integration);
+  // primitive observes via getCurrentBudgetTracker so the existing
+  // withBudgetTracker scope at line 304 still drives the cap. Per D21,
+  // `interactiveAbortMs: 0` preserves behavior (no Ctrl-C grace today).
   const reindexBody = async (): Promise<void> => {
     try {
+      // Buffer all pending rows into the work list. Worst case is bounded
+      // by `fetchCodePages` natural pagination; for triage --limit caps
+      // total work and full sweeps already accept the memory cost.
+      const workList: Array<Awaited<ReturnType<typeof fetchCodePages>>[number]> = [];
       while (true) {
         const batch = await fetchCodePages(engine, opts.sourceId, batchSize, offset);
         if (batch.length === 0) break;
-
-        for (const row of batch) {
-          const fm = row.frontmatter ?? {};
-          const relPath = typeof fm.file === 'string' ? fm.file : null;
-          if (!relPath) {
-            failed++;
-            failures.push({ slug: row.slug, error: 'missing frontmatter.file' });
-            reporter.tick();
-            continue;
-          }
-          if (!row.compiled_truth) {
-            failed++;
-            failures.push({ slug: row.slug, error: 'missing compiled_truth' });
-            reporter.tick();
-            continue;
-          }
-          try {
-            const result = await importCodeFile(engine, relPath, row.compiled_truth, {
-              noEmbed: opts.noEmbed,
-              force: opts.force,
-              sourceId: opts.sourceId,
-            });
-            if (result.status === 'imported') reindexed++;
-            else if (result.status === 'skipped') skipped++;
-            else {
-              failed++;
-              failures.push({ slug: row.slug, error: result.error ?? result.status });
-            }
-          } catch (e: unknown) {
-            // Budget cap is the one error the per-page catch must NOT swallow.
-            // Caller's outer catch reports partial progress and exits.
-            if (e instanceof BudgetExhausted) throw e;
-            failed++;
-            failures.push({ slug: row.slug, error: e instanceof Error ? e.message : String(e) });
-          }
-          reporter.tick();
-        }
-
+        workList.push(...batch);
         offset += batch.length;
         if (batch.length < batchSize) break;
+      }
+
+      const { retrofitWrap } = await import('../core/progressive-batch/retrofit-wrap.ts');
+      const pbResult = await retrofitWrap({
+        label: 'reindex.code',
+        items: workList,
+        // Per-item cost defers to BudgetTracker; this is just the
+        // primitive's projection signal for the audit JSONL.
+        costPerItem: opts.noEmbed ? 0 : 0.0001,
+        // requireBudgetSafetyNet=false because BudgetTracker is set up
+        // outside this scope when --max-cost is passed.
+        requireBudgetSafetyNet: false,
+        runner: async (rows) => {
+          let succeeded = 0;
+          let runnerFailed = 0;
+          let stageCost = 0;
+          for (const row of rows) {
+            const fm = row.frontmatter ?? {};
+            const relPath = typeof fm.file === 'string' ? fm.file : null;
+            if (!relPath) {
+              failed++;
+              runnerFailed++;
+              failures.push({ slug: row.slug, error: 'missing frontmatter.file' });
+              reporter.tick();
+              continue;
+            }
+            if (!row.compiled_truth) {
+              failed++;
+              runnerFailed++;
+              failures.push({ slug: row.slug, error: 'missing compiled_truth' });
+              reporter.tick();
+              continue;
+            }
+            try {
+              const result = await importCodeFile(engine, relPath, row.compiled_truth, {
+                noEmbed: opts.noEmbed,
+                force: opts.force,
+                sourceId: opts.sourceId,
+              });
+              if (result.status === 'imported') {
+                reindexed++;
+                succeeded++;
+                stageCost += opts.noEmbed ? 0 : 0.0001;
+              } else if (result.status === 'skipped') {
+                skipped++;
+                succeeded++;
+              } else {
+                failed++;
+                runnerFailed++;
+                failures.push({ slug: row.slug, error: result.error ?? result.status });
+              }
+            } catch (e: unknown) {
+              if (e instanceof BudgetExhausted) throw e;
+              failed++;
+              runnerFailed++;
+              failures.push({ slug: row.slug, error: e instanceof Error ? e.message : String(e) });
+            }
+            reporter.tick();
+          }
+          return { succeeded, failed: runnerFailed, costUsd: stageCost };
+        },
+      });
+      if (pbResult.abortedAt) {
+        process.stderr.write(
+          `[reindex-code] aborted at stage=${pbResult.abortedAt.stage} reason=${pbResult.abortedAt.reason ?? pbResult.abortedAt.verdict}\n`,
+        );
       }
     } finally {
       reporter.finish();

@@ -4501,6 +4501,60 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 97,
+    name: 'conversation_parser_llm_cache_table',
+    // v0.41.13.0 — content-hash-keyed cache for the conversation
+    // parser's LLM polish + fallback calls. Per D17 (codex outside
+    // voice), there is NO conversation_parser_inferred_patterns
+    // table: persisting LLM-inferred regex from a 20-line sample
+    // and applying it to whole pages + future pages is a silent
+    // corruption machine. Cache shape is per-page-content-hash;
+    // re-running the dream cycle on the same haystack is a hit;
+    // a different page with the same format misses the cache and
+    // calls the LLM again (cost-bounded by BudgetTracker).
+    //
+    // Key is (content_sha256, model_id, call_shape).
+    //   - content_sha256: sha256 of the page body the LLM saw.
+    //   - model_id: provider:model the call routed through (so a
+    //     model upgrade invalidates stale entries naturally).
+    //   - call_shape: 'polish' | 'fallback' so the same content
+    //     can be cached differently per call kind.
+    //
+    // value_json carries the parsed-message array (polish or
+    // fallback output) as JSONB. Schema_version stamped in the
+    // value object lets us evolve the shape without re-running
+    // migrations.
+    //
+    // Best-effort: this is operational cache, not source of
+    // truth. Drop and rebuild whenever cost economics shift.
+    sql: `
+      CREATE TABLE IF NOT EXISTS conversation_parser_llm_cache (
+        content_sha256 TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        call_shape TEXT NOT NULL CHECK (call_shape IN ('polish', 'fallback')),
+        value_json JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (content_sha256, model_id, call_shape)
+      );
+      CREATE INDEX IF NOT EXISTS idx_conversation_parser_llm_cache_created
+        ON conversation_parser_llm_cache (created_at);
+    `,
+    sqlFor: {
+      pglite: `
+        CREATE TABLE IF NOT EXISTS conversation_parser_llm_cache (
+          content_sha256 TEXT NOT NULL,
+          model_id TEXT NOT NULL,
+          call_shape TEXT NOT NULL CHECK (call_shape IN ('polish', 'fallback')),
+          value_json JSONB NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (content_sha256, model_id, call_shape)
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_parser_llm_cache_created
+          ON conversation_parser_llm_cache (created_at);
+      `,
+    },
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0
