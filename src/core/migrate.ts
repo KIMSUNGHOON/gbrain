@@ -4501,6 +4501,46 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 98,
+    name: 'gbrain_cycle_locks_last_refreshed_at',
+    // v0.41.13.0 (D-V3-4 + D-V4-1) — add last_refreshed_at column for
+    // `gbrain sync --break-lock --max-age <s>` to correctly identify
+    // wedged-but-alive lock holders without stealing healthy long-running
+    // holders that are actively refreshing.
+    //
+    // BACKFILL POLICY: last_refreshed_at = NOW() (NOT acquired_at).
+    //
+    // Why NOW(): during the upgrade window there can be ACTIVE sync
+    // processes still running the OLD binary. Their refresh() only bumps
+    // ttl_expires_at (the old code didn't know about last_refreshed_at).
+    // If we backfilled = acquired_at (e.g. 25 min ago), then `gbrain sync
+    // --break-lock --all --max-age 1800` after the migration would
+    // immediately delete the lock of a HEALTHY 25-min-old holder that's
+    // still actively writing. That IS the bug class this PR exists to
+    // fix; reintroducing it through the migration backfill would be
+    // worse than not shipping at all.
+    //
+    // Backfilling = NOW() gives every pre-upgrade holder a 30-min
+    // protection window: --max-age 1800 cannot identify them as wedged
+    // for 30 min after migrate. After that, all pre-upgrade syncs are
+    // either complete (lock released) OR genuinely wedged (--max-age
+    // does the right thing on the next operator command).
+    //
+    // CHANGELOG documents the rollout caveat: 30-min window where
+    // --max-age cannot identify wedged pre-upgrade holders; operators
+    // hitting that window use --force-break-lock instead.
+    //
+    // Engine parity: same ALTER TABLE shape works on Postgres + PGLite.
+    // The column is nullable; existing reads that don't SELECT it stay
+    // valid. Forward-reference bootstrap not required because new code
+    // that reads the column (inspectLock, deleteLockRowIfStale,
+    // listStaleLocks Postgres path) only runs after this migration.
+    sql: `
+      ALTER TABLE gbrain_cycle_locks ADD COLUMN IF NOT EXISTS last_refreshed_at TIMESTAMPTZ;
+      UPDATE gbrain_cycle_locks SET last_refreshed_at = NOW() WHERE last_refreshed_at IS NULL;
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

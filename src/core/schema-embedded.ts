@@ -877,11 +877,16 @@ CREATE TABLE IF NOT EXISTS dream_verdicts (
 -- Works through PgBouncer transaction pooling, unlike session-scoped
 -- pg_try_advisory_lock.
 CREATE TABLE IF NOT EXISTS gbrain_cycle_locks (
-  id              TEXT        PRIMARY KEY,
-  holder_pid      INT         NOT NULL,
-  holder_host     TEXT,
-  acquired_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  ttl_expires_at  TIMESTAMPTZ NOT NULL
+  id                 TEXT        PRIMARY KEY,
+  holder_pid         INT         NOT NULL,
+  holder_host        TEXT,
+  acquired_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ttl_expires_at     TIMESTAMPTZ NOT NULL,
+  -- v0.41.13.0 (migration v97 + D-V3-4): bumped on every withRefreshingLock
+  -- refresh tick. Used by \`gbrain sync --break-lock --max-age <s>\` to
+  -- identify wedged-but-alive holders without stealing healthy long-running
+  -- holders that are actively refreshing.
+  last_refreshed_at  TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_cycle_locks_ttl ON gbrain_cycle_locks(ttl_expires_at);
 
