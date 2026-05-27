@@ -4522,11 +4522,6 @@ export const MIGRATIONS: Migration[] = [
     // The Postgres path uses CREATE INDEX CONCURRENTLY (with `transaction:
     // false` so postgres.js doesn't wrap an implicit BEGIN) and pre-drops
     // any invalid remnant from a prior failed CONCURRENTLY attempt.
-    //
-    // Slot history: originally v95, bumped to v96 after master's #1442
-    // landed (links CHECK widening), then bumped to v97 after master's
-    // v0.41.11.0 (#1446) claimed v96 for the facts conversation index.
-    // Migration content unchanged across renumbers.
     sql: '',
     transaction: false,
     handler: async (engine) => {
@@ -4585,19 +4580,62 @@ export const MIGRATIONS: Migration[] = [
     // either complete (lock released) OR genuinely wedged (--max-age
     // does the right thing on the next operator command).
     //
-    // CHANGELOG documents the rollout caveat: 30-min window where
-    // --max-age cannot identify wedged pre-upgrade holders; operators
-    // hitting that window use --force-break-lock instead.
-    //
     // Engine parity: same ALTER TABLE shape works on Postgres + PGLite.
-    // The column is nullable; existing reads that don't SELECT it stay
-    // valid. Forward-reference bootstrap not required because new code
-    // that reads the column (inspectLock, deleteLockRowIfStale,
-    // listStaleLocks Postgres path) only runs after this migration.
     sql: `
       ALTER TABLE gbrain_cycle_locks ADD COLUMN IF NOT EXISTS last_refreshed_at TIMESTAMPTZ;
       UPDATE gbrain_cycle_locks SET last_refreshed_at = NOW() WHERE last_refreshed_at IS NULL;
     `,
+  },
+  {
+    version: 99,
+    name: 'conversation_parser_llm_cache_table',
+    // v0.41.16.0 — content-hash-keyed cache for the conversation
+    // parser's LLM polish + fallback calls. Per D17 (codex outside
+    // voice), there is NO conversation_parser_inferred_patterns
+    // table: persisting LLM-inferred regex from a 20-line sample
+    // and applying it to whole pages + future pages is a silent
+    // corruption machine. Cache shape is per-page-content-hash;
+    // re-running the dream cycle on the same haystack is a hit;
+    // a different page with the same format misses the cache and
+    // calls the LLM again (cost-bounded by BudgetTracker).
+    //
+    // Key is (content_sha256, model_id, call_shape).
+    //   - content_sha256: sha256 of the page body the LLM saw.
+    //   - model_id: provider:model the call routed through (so a
+    //     model upgrade invalidates stale entries naturally).
+    //   - call_shape: 'polish' | 'fallback' so the same content
+    //     can be cached differently per call kind.
+    //
+    // Slot history: originally v97, bumped to v98 after master's
+    // v0.41.13.0 (#1422 fix-wave) claimed v97 for the dedup index,
+    // bumped to v99 after master's v0.41.15.0 (#1506 sync RFC)
+    // claimed v98 for the lock-refresh column.
+    sql: `
+      CREATE TABLE IF NOT EXISTS conversation_parser_llm_cache (
+        content_sha256 TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        call_shape TEXT NOT NULL CHECK (call_shape IN ('polish', 'fallback')),
+        value_json JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (content_sha256, model_id, call_shape)
+      );
+      CREATE INDEX IF NOT EXISTS idx_conversation_parser_llm_cache_created
+        ON conversation_parser_llm_cache (created_at);
+    `,
+    sqlFor: {
+      pglite: `
+        CREATE TABLE IF NOT EXISTS conversation_parser_llm_cache (
+          content_sha256 TEXT NOT NULL,
+          model_id TEXT NOT NULL,
+          call_shape TEXT NOT NULL CHECK (call_shape IN ('polish', 'fallback')),
+          value_json JSONB NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (content_sha256, model_id, call_shape)
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_parser_llm_cache_created
+          ON conversation_parser_llm_cache (created_at);
+      `,
+    },
   },
 ];
 

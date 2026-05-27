@@ -63,6 +63,20 @@ per /plan-eng-review D-decisions.
   is the larger throughput lever and stays serial in v0.41.17.0.
   Touches the symbol-resolver core; defer until the next chunker
   refactor wave.
+- [ ] **v0.41.18+: re-compose progressive-batch + workers on the 3 reindex
+  sites.** v0.41.17.0 merged master's v0.41.16.0 progressive-batch retrofit
+  for `reindex.ts`, `reindex-multimodal.ts`, `reindex-code.ts` AGAINST this
+  wave's `--workers N` retrofit on the same files. The merge took ours
+  (workers) because `--workers` is the load-bearing user-facing feature in
+  this wave; master's progressive-batch primitive at
+  `src/core/progressive-batch/` still ships unchanged. The two layers are
+  orthogonal at the semantic level: each ramp stage could call
+  `runSlidingPool` to fan its items across N workers. v0.41.18+ wave: wrap
+  the workers fan-out inside the progressive-batch outer ramp on each of
+  the 3 reindex sites. Test parity: ramp + workers together produces the
+  same final state as either alone on a fresh corpus. Reference: master's
+  PR #1510 commit on the same files for the progressive-batch primitive
+  call site; this wave's PR #1519 for the workers call site.
 - [ ] **v0.41.18+: `reindex-frontmatter` worker pool actually parallelizes
   the underlying `backfillEffectiveDate` library.** T12 added the
   `--workers N` flag for API consistency but the underlying library
@@ -78,6 +92,100 @@ per /plan-eng-review D-decisions.
   show production brains. v0.42+ design needs a confirmation prompt +
   maintenance-window UX. Don't file as P0 — doctor + preflight is
   enough for most users.
+
+## v0.41.16.0 conversation parser + progressive-batch follow-ups (v0.41.14.0+)
+
+The v0.41.16.0 cathedral shipped the parser primitive + progressive-batch
+primitive + ONE proven consumer (extract-conversation-facts). Per D2 (codex
+outside voice acknowledged + user accepted the trade), the wider 9-site
+retrofit + 5 architectural follow-ups land as structured waves to keep each
+PR bisectable.
+
+- [ ] **v0.41.14.0: 9-site progressive-batch retrofit (one commit per site
+  for bisect).** The primitive at `src/core/progressive-batch/` shipped
+  with ONE consumer (extract-conversation-facts). Twelve other batch
+  sites still reinvent their own ramp+cost-prompt patterns; rule of
+  three is comfortably past. Retrofit each onto the primitive in
+  sequence, one commit per site for bisect, behavior parity tested
+  before/after migration:
+  - `src/commands/reindex.ts` (markdown chunker bump) — existing 10s
+    Ctrl-C grace + `GBRAIN_NO_REEMBED=1` env map to
+    `interactiveAbortMs` + `GBRAIN_PROGRESSIVE_BATCH_DISABLED`.
+  - `src/commands/reindex-multimodal.ts` (Phase 3 unified column) —
+    360min lock survives orthogonal; cost prompt becomes stage report.
+  - `src/commands/reindex-code.ts` — sites without existing ramps
+    keep jump-to-full default per D21; ramp is opt-in.
+  - `src/core/post-upgrade-reembed.ts` — TTY auto-proceed maps directly
+    to `GBRAIN_PROGRESSIVE_BATCH_AUTO`.
+  - `src/commands/book-mirror.ts` — cost-estimate becomes stage 0.
+  - `src/core/brainstorm/orchestrator.ts` — already wraps in
+    `withBudgetTracker`; primitive accepts the active tracker.
+  - `src/commands/eval-suspected-contradictions.ts` — sampling probe
+    becomes stage 0; full run becomes stages 1-4.
+  - `src/core/eval-contradictions/cost-prompt.ts` — DELETE entirely;
+    callers route through the primitive's Policy.maxCostUsd.
+  - `src/core/minions/handlers/contextual-reindex-per-chunk.ts` —
+    `GBRAIN_PROGRESSIVE_BATCH_AUTO` defaults true for workers.
+  Priority: P2. Rationale: future batch features inherit the discipline
+  for free; the 12 existing sites stay bespoke until done.
+
+- [ ] **v0.42+: per-source pattern overrides.** New config key
+  `cycle.conversation_facts_backfill.source_overrides.<id>.patterns`
+  (JSON array of `simple_pattern` specs). Pros: brain with both
+  Telegram AND Discord sources can declare per-source pattern priority.
+  Cons: another config key to validate; per-source pattern indexing
+  needs runtime per-page lookup. Context: v1 keeps patterns
+  brain-global to ship faster. Priority: P3.
+
+- [ ] **v0.42+: Worker-based regex isolate-and-kill for arbitrary user
+  patterns.** Compile user-supplied regex inside a Node Worker and kill
+  the Worker on timeout. Why: Node has no native `RegExp.abort`; v0.41.13
+  Promise.race-based ReDoS sniff is fake (the regex engine can't be
+  preempted once running). v0.41.13 ships NO arbitrary user regex
+  surface to avoid the security theater; user patterns wait for this.
+  Alternative: safe-regex npm (synchronous static analysis, catches
+  the canonical /^(a+)+$/ class). Cons: per-pattern Worker startup
+  cost; complexity. Context: today's `simple_pattern` structured spec
+  (also v0.42+) compiles to known-safe regex shapes without the
+  worker dance. Priority: P3.
+
+- [ ] **v0.42+: per-pattern speaker-alias normalization.** LongMemEval-
+  style per-page alias map collapsing `"Alice"` + `"Alice Smith"` +
+  `"alice"` to one canonical slug. See `src/eval/longmemeval/extract.ts`
+  `AliasMap` shape. Pros: cleaner downstream fact extraction. Cons:
+  state per-page (currently stateless orchestrator). Context: today
+  downstream `resolveEntitySlug` handles this via the entities table
+  (good enough but cleaner upstream). Priority: P3.
+
+- [ ] **v0.42+: cross-modal scoring of LLM-fallback output.** Feed
+  fallback-parsed messages to a judge model and score correctness.
+  Why: catches hallucinated parses (LLM "inventing" speakers/timestamps
+  on adversarial input). Pros: closes a quality gap. Cons: cost;
+  needs budget policy + judge model selection. Context: v0.41.16.0
+  catches hallucination only via the adversarial fixture set in the
+  nightly probe (5 fixtures). Real adversarial drift = more
+  fixtures + judge scoring. Priority: P2.
+
+- [ ] **v0.42+: mega-regex compilation fallback.** Combine 12+ built-ins
+  into one alternation regex if D11 quick_reject benchmarks disappoint.
+  Pros: faster on dense conversations (single pass per line). Cons:
+  debugging which alternative matched is nightmarish; one bad anchor
+  corrupts all. Context: D11 quick_reject is expected to deliver ~10×
+  speedup; revisit only if real corpus measurements show >5ms parse
+  time per page. Priority: P3.
+
+- [ ] **v0.42+: real-corpus-redacted fixture set.** Add
+  `test/fixtures/conversation-formats/real-corpus-redacted/` derived
+  from 5-10 real production Telegram pages with: real names →
+  placeholder names (alice-example, charlie-example, fund-a) via a
+  one-shot scrubber script, real timestamps preserved, real message
+  bodies preserved STRUCTURALLY (length + line-break shape) but
+  content replaced with lorem-ipsum-style synthetic prose. Privacy
+  guard extended. Why: synthetic 8-12 message fixtures prove regex
+  syntax, not production recovery of 134 real Telegram-shaped pages.
+  Real edge cases (long pastes, code blocks, replies, day-separators)
+  only surface in real corpora. Adds ~30min scrub step + privacy
+  guard maintenance. Priority: P2.
 
 ## v0.41.15.0 sync-reliability follow-ups (v0.42+)
 
@@ -2019,7 +2127,8 @@ After the sweep, both should be fixable and renameable back to plain `*.test.ts`
 
 **Context:**
 - Reproduced live during plan verification on 2026-04-29. Previous `multi-source.test.ts` failure killed the script before postgres-bootstrap, postgres-jsonb, etc. could run.
-- Likely fix: replace `echo "$output"` with `printf '%s\n' "$output"`, or write `$output` to a tmpfile and `cat` it (handles large blobs better than echo over pipes), or pipe through `stdbuf -o0`.
+- Likely fix: replace `echo "$output"` with `printf '%s
+' "$output"`, or write `$output` to a tmpfile and `cat` it (handles large blobs better than echo over pipes), or pipe through `stdbuf -o0`.
 - Don't suppress the postgres NOTICE flood at the test layer — that's separate; here we just want the script to not die when bun's stderr is verbose.
 
 **Effort:** S (human or CC: ~10 min).
@@ -2965,7 +3074,8 @@ iteration's residuals.
 
 **Cons:** Touches every existing `executeRaw` call site (~25). Requires careful audit — accidentally tagging a mutation as idempotent re-introduces the phantom-write bug.
 
-**Context:** Codex F3 demonstrated that `READ_ONLY_PREFIX = /^(\s|--.*\n)*(SELECT|WITH)\b/i` is unsound — `WITH x AS (UPDATE … RETURNING …) SELECT …` matches the prefix but updates a row; `SELECT pg_advisory_xact_lock(...)` is a SELECT with side effects. The plan-eng-review wrap-up in `~/.claude/plans/system-instruction-you-are-working-tender-horizon.md` has the full discussion.
+**Context:** Codex F3 demonstrated that `READ_ONLY_PREFIX = /^(\s|--.*
+)*(SELECT|WITH)/i` is unsound — `WITH x AS (UPDATE … RETURNING …) SELECT …` matches the prefix but updates a row; `SELECT pg_advisory_xact_lock(...)` is a SELECT with side effects. The plan-eng-review wrap-up in `~/.claude/plans/system-instruction-you-are-working-tender-horizon.md` has the full discussion.
 
 **Effort estimate:** M (human: ~1 day / CC: ~30 min including call-site audit).
 **Priority:** P2 — current behavior (no retry, supervisor recovers within ~3 min) is acceptable but per-call recovery is a real ergonomic win.

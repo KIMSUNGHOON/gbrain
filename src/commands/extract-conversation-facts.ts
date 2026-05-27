@@ -267,41 +267,42 @@ export interface ExtractConversationFactsResult {
 }
 
 // ---------------------------------------------------------------------------
-// Message parsing — lines like:
-//   **Name** (YYYY-MM-DD H:MM AM/PM): text
-// Unmatched lines become continuations of the prior message (multi-line
-// imessage bodies).
+// Message parsing — v0.41.13.0 delegates to the new
+// `src/core/conversation-parser/parse.ts` orchestrator (12+ built-in
+// formats + opt-IN LLM polish/fallback). PR #1461's Telegram bracket-time
+// shape is the `telegram-bracket` built-in pattern. PR #1461's existing
+// `MESSAGE_LINE_RX` is the `imessage-slack` built-in pattern.
+//
+// This wrapper preserves the historical `parseConversationMessages(body,
+// opts)` shape for back-compat with the test suite + any direct callers.
+// `processPage` below threads a full Page through `parseConversation` so
+// frontmatter date / timezone / effective_date precedence per D8 takes
+// effect.
 // ---------------------------------------------------------------------------
 
-const MESSAGE_LINE_RX =
-  /^\*\*(.+?)\*\*\s*\((\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\)\s*:\s*(.*)$/;
+import {
+  parseConversation,
+  type ParseConversationOpts as OrchestratorParseOpts,
+} from '../core/conversation-parser/parse.ts';
 
-export function parseConversationMessages(body: string): ConversationMessage[] {
-  if (!body) return [];
-  const out: ConversationMessage[] = [];
-  for (const rawLine of body.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const m = MESSAGE_LINE_RX.exec(line);
-    if (m) {
-      const [, speaker, date, hStr, mStr, ampmRaw, text] = m;
-      let hour = Number(hStr);
-      const minute = Number(mStr);
-      const ampm = (ampmRaw || '').toUpperCase();
-      if (ampm === 'PM' && hour < 12) hour += 12;
-      if (ampm === 'AM' && hour === 12) hour = 0;
-      const iso = `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`;
-      out.push({
-        speaker: speaker.trim(),
-        timestamp: iso,
-        text: (text || '').trim(),
-      });
-    } else if (out.length > 0) {
-      const last = out[out.length - 1];
-      last.text = last.text ? `${last.text}\n${line}` : line;
-    }
-  }
-  return out;
+/**
+ * v0.41.13.0 — back-compat shape for direct callers + the existing
+ * test suite. Delegates to the new orchestrator.
+ *
+ * Per D8: callers with a full Page should pass `opts.page` instead of
+ * `opts.fallbackDate` so the orchestrator's date-derivation chain
+ * (frontmatter.date > effective_date > '1970-01-01') applies. The
+ * `fallbackDate` field is preserved for PR #1461's test cases that
+ * pass it explicitly.
+ */
+export function parseConversationMessages(
+  body: string,
+  opts: { fallbackDate?: string } = {},
+): ConversationMessage[] {
+  const result = parseConversation(body, {
+    fallbackDate: opts.fallbackDate,
+  } as OrchestratorParseOpts);
+  return result.messages;
 }
 
 // ---------------------------------------------------------------------------
@@ -680,7 +681,17 @@ async function processPage(
   }
 
   const body = readPageBody(page);
-  const messages = parseConversationMessages(body);
+  // v0.41.13.0: thread the full Page through the orchestrator so D8
+  // date-derivation chain (frontmatter.date > effective_date >
+  // '1970-01-01') AND timezone_policy warnings apply. The historical
+  // `parseConversationMessages(body)` shape only saw the body, which
+  // meant Telegram-bracket pages with frontmatter dates landed at
+  // 1970-01-01. Now they pick up the correct date.
+  const parseResult = parseConversation(body, { page });
+  const messages = parseResult.messages;
+  if (parseResult.timezone_warning) {
+    process.stderr.write(parseResult.timezone_warning + '\n');
+  }
   const segments = splitIntoSegments(messages, { sinceIso });
   if (segments.length === 0) {
     state.result.pages_skipped++;

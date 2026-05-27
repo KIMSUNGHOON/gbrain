@@ -35,7 +35,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'schema', 'capture']);
+const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'conversation-parser']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -1137,6 +1137,32 @@ async function handleCliOnly(command: string, args: string[]) {
     return;
   }
 
+  // v0.41.13.0: `gbrain eval conversation-parser` is pure-function
+  // (parses fixture JSONL, runs parseConversation, scores results).
+  // No DB access; bypass connectEngine entirely so the CI fixture
+  // gate runs on machines with no `~/.gbrain/config.json`.
+  if (command === 'eval' && args[0] === 'conversation-parser') {
+    const { runEvalConversationParser } = await import('./commands/eval-conversation-parser.ts');
+    process.exit(await runEvalConversationParser(args.slice(1)));
+  }
+
+  // v0.41.13.0: `gbrain conversation-parser list-builtins | validate
+  // | --help` are pure (no DB access). Bypass connectEngine so the
+  // operator can run them on machines with no brain configured.
+  // `scan <slug>` needs a brain and falls through.
+  if (
+    command === 'conversation-parser' &&
+    (args.length === 0 ||
+      args[0] === '--help' ||
+      args[0] === '-h' ||
+      args[0] === 'list-builtins' ||
+      args[0] === 'validate')
+  ) {
+    const { runConversationParser } = await import('./commands/conversation-parser.ts');
+    await runConversationParser(null, args);
+    return;
+  }
+
   // v0.33.1.3: `gbrain eval whoknows` on thin-client installs bypasses
   // connectEngine entirely — the eval routes per-query through the remote
   // `find_experts` MCP op (the v0.31.1 routing seam). Local mode falls
@@ -1400,6 +1426,14 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'capture': {
         const { runCapture } = await import('./commands/capture.ts');
         await runCapture(engine, args);
+        break;
+      }
+      case 'conversation-parser': {
+        // v0.41.13.0 — debug + introspection CLI for the new parser
+        // cathedral. `scan <slug>` requires a connected brain; the
+        // other subcommands are pure (`list-builtins`, `validate`).
+        const { runConversationParser } = await import('./commands/conversation-parser.ts');
+        await runConversationParser(engine, args);
         break;
       }
       case 'edges-backfill': {

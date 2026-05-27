@@ -1,4 +1,16 @@
 /**
+ * v0.41.13.0 T19 retrofit note: extract has TWO sources (fs walk + db
+ * walk) and TWO data kinds (links + timeline). Each combination has its
+ * own buffer-then-flush pattern at BATCH_SIZE. The
+ * `src/core/progressive-batch/` primitive's stage model is a poor fit
+ * here because (a) extraction is pure deterministic regex (no LLM cost
+ * to gate), (b) the cost-cap value-add lives at the embed step that
+ * follows extract, not at extract itself, and (c) wrapping 4 separate
+ * batch sites in the primitive would balloon the diff without
+ * observable operator value. Filed in TODOS.md as v0.41.14.0+ if the
+ * primitive's audit JSONL value justifies the ceremony. No code change
+ * in v0.41.13.0; cost-free extract continues as-is.
+ *
  * gbrain extract — Extract links and timeline entries from brain content.
  *
  * Two data sources:
