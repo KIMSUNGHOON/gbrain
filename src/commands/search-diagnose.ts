@@ -82,7 +82,7 @@ export async function runSearchDiagnose(engine: BrainEngine, args: string[]): Pr
   try {
     const m = await engine.resolveAliases([qNorm], scope);
     aliasMatch = (m.get(qNorm) ?? []).some(r => r.slug === target);
-  } catch { /* pre-v108: no alias layer */ }
+  } catch { /* pre-v109: no alias layer */ }
 
   // Hybrid layer (the production path).
   const hy = await hybridSearch(engine, query, { limit, ...scope });

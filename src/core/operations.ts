@@ -10,9 +10,7 @@ import { clampSearchLimit } from './engine.ts';
 import type { GBrainConfig } from './config.ts';
 import type { PageType } from './types.ts';
 import { importFromContent } from './import-file.ts';
-import { serializePageToMarkdown, resolvePageFilePath } from './markdown.ts';
-import { mkdirSync, writeFileSync, existsSync, statSync } from 'fs';
-import { dirname } from 'path';
+import { writePageThrough } from './write-through.ts';
 import { hybridSearch, hybridSearchCached } from './search/hybrid.ts';
 import { expandQuery } from './search/expansion.ts';
 import { dedupResults } from './search/dedup.ts';
@@ -771,38 +769,20 @@ const put_page: Operation = {
     const isSandboxSubagent = ctx.viaSubagent === true
       && !(Array.isArray(ctx.allowedSlugPrefixes) && ctx.allowedSlugPrefixes.length > 0);
     if (!ctx.dryRun && result.status !== 'error' && !isSandboxSubagent) {
-      try {
-        const repoPath = await ctx.engine.getConfig('sync.repo_path');
-        if (!repoPath) {
-          writeThrough = { written: false, skipped: 'no_repo_configured' };
-        } else if (!existsSync(repoPath) || !statSync(repoPath).isDirectory()) {
-          writeThrough = { written: false, skipped: 'repo_not_found' };
-        } else {
-          const sourceId = ctx.sourceId ?? 'default';
-          const writtenPage = await ctx.engine.getPage(result.slug, { sourceId });
-          if (writtenPage) {
-            const tags = await ctx.engine.getTags(result.slug, { sourceId });
-            const provenanceVia = ctx.remote === false ? 'put_page' : 'mcp:put_page';
-            const md = serializePageToMarkdown(writtenPage, tags, {
-              frontmatterOverrides: {
-                ingested_via: provenanceVia,
-                ingested_at: new Date().toISOString(),
-                source_kind: provenanceVia,
-              },
-            });
-            const filePath = resolvePageFilePath(repoPath as string, result.slug, sourceId);
-            mkdirSync(dirname(filePath), { recursive: true });
-            writeFileSync(filePath, md, 'utf8');
-            writeThrough = { written: true, path: filePath };
-          } else {
-            writeThrough = { written: false, skipped: 'page_not_found_after_write' };
-          }
-        }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        ctx.logger.warn(`[put_page] write-through failed for ${result.slug}: ${msg}`);
-        writeThrough = { written: false, error: msg };
-      }
+      const sourceId = ctx.sourceId ?? 'default';
+      const provenanceVia = ctx.remote === false ? 'put_page' : 'mcp:put_page';
+      // Shared canonical write-through (also used by `gbrain brainstorm/lsd
+      // --save`). Renders the file from the saved DB row and writes it
+      // atomically; never throws (failures land in skipped/error).
+      writeThrough = await writePageThrough(ctx.engine, result.slug, {
+        sourceId,
+        frontmatterOverrides: {
+          ingested_via: provenanceVia,
+          ingested_at: new Date().toISOString(),
+          source_kind: provenanceVia,
+        },
+        logger: ctx.logger,
+      });
     } else if (isSandboxSubagent) {
       writeThrough = { written: false, skipped: 'subagent_sandbox' };
     } else if (ctx.dryRun) {

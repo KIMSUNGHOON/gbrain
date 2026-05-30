@@ -4922,6 +4922,32 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     version: 108,
+    name: 'pages_embedding_signature',
+    // v0.41.31 — embedding provenance for real stale semantics.
+    //
+    // Adds `pages.embedding_signature TEXT NULL` = `<provider:model>:<dims>`
+    // stamped when a page's chunks are embedded (setPageEmbeddingSignature).
+    // A later model/dimension swap makes the stored signature differ from
+    // the current one, so countStaleChunks/sumStaleChunkChars (with the
+    // `signature` opt) and invalidateStaleSignatureEmbeddings can detect and
+    // re-embed those pages.
+    //
+    // GRANDFATHER (critical): the stale predicate is
+    //   `embedding_signature IS NOT NULL AND embedding_signature <> $current`
+    // so a NULL signature is NEVER stale. After this migration every existing
+    // page has NULL — none are flagged — so the next `embed --stale` does NOT
+    // re-embed the whole corpus. Signatures only get stamped going forward.
+    //
+    // No index: the column is read only via a JOINed pages row in the
+    // chunk-grain stale queries; no standalone lookup hot path. ADD COLUMN
+    // with no DEFAULT (NULL) is metadata-only on Postgres 11+ / PGLite 17.5.
+    idempotent: true,
+    sql: `
+      ALTER TABLE pages ADD COLUMN IF NOT EXISTS embedding_signature TEXT NULL;
+    `,
+  },
+  {
+    version: 109,
     name: 'page_aliases',
     // T3 of the retrieval-cathedral wave (retrieval-maxpool incident).
     //
@@ -4946,7 +4972,7 @@ export const MIGRATIONS: Migration[] = [
     // idempotent without blocking a second page's claim on the same alias.
     //
     // Mirror in src/core/pglite-schema.ts (fresh install); forward-reference
-    // bootstrap probe on both engines so pre-v108 brains pick it up cleanly.
+    // bootstrap probe on both engines so pre-v109 brains pick it up cleanly.
     idempotent: true,
     sql: `
       CREATE TABLE IF NOT EXISTS page_aliases (
@@ -4964,7 +4990,7 @@ export const MIGRATIONS: Migration[] = [
     `,
   },
   {
-    version: 109,
+    version: 110,
     name: 'search_telemetry_rank1_columns',
     // T7 of the retrieval-cathedral wave — rank-1 base_score drift signal.
     // Aggregate columns (NOT per-query rows, D10) so a downward drift in the

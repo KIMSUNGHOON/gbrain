@@ -3,7 +3,7 @@
  * (T8 — backfill the free-text alias layer).
  *
  * Import-time projection (T3) covers NEW + changed pages; this backfills the
- * EXISTING pages whose frontmatter `aliases:` predate v108 (or predate the
+ * EXISTING pages whose frontmatter `aliases:` predate v109 (or predate the
  * projection landing). Reads each page's frontmatter `aliases:` and writes
  * page_aliases via engine.setPageAliases.
  *
@@ -63,7 +63,7 @@ export async function runReindexAliases(engine: BrainEngine, args: string[]): Pr
         await engine.setPageAliases(ref.slug, ref.source_id, aliasNorms);
       } catch (e) {
         reporter.finish();
-        throw e; // pre-v108 (no table) or a real write error — surface it.
+        throw e; // pre-v109 (no table) or a real write error — surface it.
       }
     }
   }

@@ -1,5 +1,5 @@
 /**
- * T9 regression — pre-v108 brains (no page_aliases table) must keep working.
+ * T9 regression — pre-v109 brains (no page_aliases table) must keep working.
  * The alias layer is additive: every alias touchpoint fails open so a brain
  * mid-upgrade (migration not yet run) still ingests and searches normally.
  */
@@ -22,7 +22,7 @@ afterAll(async () => { await engine.disconnect(); });
 
 beforeEach(async () => {
   await resetPgliteState(engine);
-  // Simulate a pre-v108 brain: drop the page_aliases table entirely.
+  // Simulate a pre-v109 brain: drop the page_aliases table entirely.
   await engine.executeRaw('DROP TABLE IF EXISTS page_aliases');
 });
 

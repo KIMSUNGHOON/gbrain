@@ -158,6 +158,10 @@ const REQUIRED_BOOTSTRAP_COVERAGE: ForwardReference[] = [
   // pages_generation_idx (CREATE INDEX ON pages (generation)) so bootstrap
   // probes guard pre-v91 brains.
   { kind: 'column', table: 'pages', column: 'generation' },
+  // v0.41.31 (v108) — pages.embedding_signature TEXT for real stale
+  // semantics. No SCHEMA_SQL index references it; bootstrap probe is
+  // defense-in-depth (and satisfies the MIGRATIONS ADD COLUMN coverage gate).
+  { kind: 'column', table: 'pages', column: 'embedding_signature' },
 ];
 
 test('applyForwardReferenceBootstrap covers every forward reference declared in REQUIRED_BOOTSTRAP_COVERAGE', async () => {
@@ -655,8 +659,8 @@ test('every CREATE INDEX column in PGLITE_SCHEMA_SQL is covered by CREATE TABLE 
 // ─────────────────────────────────────────────────────────────────
 
 const COLUMN_EXEMPTIONS = new Set<string>([
-  // T7 — search_telemetry rank-1 drift columns (migration v109). search_telemetry
-  // is created entirely by migration v57 (not in the schema blob), so the v57+v109
+  // T7 — search_telemetry rank-1 drift columns (migration v110). search_telemetry
+  // is created entirely by migration v57 (not in the schema blob), so the v57+v110
   // chain handles fresh + upgrade; no CREATE INDEX references these columns, so
   // there's no forward reference for the bootstrap to cover.
   'search_telemetry.sum_rank1_score',

@@ -525,7 +525,7 @@ const MAX_ALIAS_INJECT = 3;           // cap injected pages per query (collision
  *     never an absolute 1.0 (D3 — aliases are not a ranking sledgehammer).
  *   - collisions (two pages claim one alias): deterministic alpha order, capped.
  *
- * Fail-open: pre-v108 brains (no page_aliases table) and any lookup error
+ * Fail-open: pre-v109 brains (no page_aliases table) and any lookup error
  * degrade to the input unchanged (D9). Returns a NEW array; caller re-slices.
  */
 export async function applyAliasHop(
@@ -542,7 +542,7 @@ export async function applyAliasHop(
   try {
     aliasMap = await engine.resolveAliases([qNorm], { sourceId: opts.sourceId, sourceIds: opts.sourceIds });
   } catch {
-    return results; // pre-v108 table-missing OR transient error -> fail-open
+    return results; // pre-v109 table-missing OR transient error -> fail-open
   }
   const refs = aliasMap.get(qNorm);
   if (!refs || refs.length === 0) return results;
@@ -1213,7 +1213,7 @@ export async function hybridSearch(
 
   // T3 — free-text alias hop. Runs AFTER rerank so a query that is a page's
   // declared chosen name reliably surfaces that page regardless of how the
-  // reranker scored body chunks. Fail-open on pre-v108 brains.
+  // reranker scored body chunks. Fail-open on pre-v109 brains.
   const aliasHopped = await applyAliasHop(engine, reranked, query, {
     sourceId: opts?.sourceId,
     sourceIds: opts?.sourceIds,
