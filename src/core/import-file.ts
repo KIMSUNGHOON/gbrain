@@ -8,7 +8,7 @@ import { chunkText } from './chunkers/recursive.ts';
 import { chunkCodeText, chunkCodeTextFull, detectCodeLanguage, CHUNKER_VERSION } from './chunkers/code.ts';
 import { findChunkForOffset } from './chunkers/edge-extractor.ts';
 import { extractCodeRefs, imageOfCandidates } from './link-extraction.ts';
-import { embedBatch, embedMultimodal } from './embedding.ts';
+import { embedBatch, embedMultimodal, currentEmbeddingSignature } from './embedding.ts';
 import { slugifyPath, slugifyCodePath, isCodeFilePath } from './sync.ts';
 import type { ChunkInput, PageInput, PageType } from './types.ts';
 import { computeEffectiveDate } from './effective-date.ts';
@@ -658,6 +658,13 @@ export async function importFromContent(
 
     if (chunks.length > 0) {
       await tx.upsertChunks(slug, chunks, txOpts);
+      // v0.41.31: stamp embedding provenance when this import actually
+      // embedded (not --no-embed), so a later model/dims swap is detectable
+      // as stale via embed --stale. The deferred/backfill + per-slug embed
+      // paths stamp too; this covers the inline import/sync path.
+      if (!opts.noEmbed) {
+        await tx.setPageEmbeddingSignature(slug, { sourceId, signature: currentEmbeddingSignature() });
+      }
     } else {
       // Content is empty — delete stale chunks so they don't ghost in search results
       await tx.deleteChunks(slug, txOpts);
@@ -968,6 +975,14 @@ export async function importCodeFile(
 
     if (chunks.length > 0) {
       await tx.upsertChunks(slug, chunks, txOpts);
+      // v0.41.31: stamp embedding provenance ONLY when every chunk was
+      // freshly embedded with the current model this call (no reuse-by-hash
+      // carrying old-model vectors). Mixed pages stay unstamped rather than
+      // falsely marked current; `reindex --code --force` / `embed --stale`
+      // handle the swap for those.
+      if (!opts.noEmbed && needsEmbedIndexes.length === chunks.length) {
+        await tx.setPageEmbeddingSignature(slug, { sourceId, signature: currentEmbeddingSignature() });
+      }
     } else {
       await tx.deleteChunks(slug, txOpts);
     }

@@ -455,7 +455,9 @@ export class PostgresEngine implements BrainEngine {
         EXISTS (SELECT 1 FROM information_schema.columns
                 WHERE table_schema = current_schema() AND table_name = 'sources' AND column_name = 'trust_frontmatter_overrides') AS sources_trust_fm_exists,
         EXISTS (SELECT 1 FROM information_schema.columns
-                WHERE table_schema = current_schema() AND table_name = 'pages' AND column_name = 'generation') AS pages_generation_exists
+                WHERE table_schema = current_schema() AND table_name = 'pages' AND column_name = 'generation') AS pages_generation_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'pages' AND column_name = 'embedding_signature') AS pages_embedding_signature_exists
     `;
     const probe = probeRows[0]!;
 
@@ -530,6 +532,7 @@ export class PostgresEngine implements BrainEngine {
       sources_cr_mode_exists?: boolean;
       sources_trust_fm_exists?: boolean;
       pages_generation_exists?: boolean;
+      pages_embedding_signature_exists?: boolean;
     };
     const needsContextualRetrievalColumns = (probe.pages_exists
         && (!probeCr.pages_cr_mode_exists || !probeCr.pages_corpus_generation_exists))
@@ -540,6 +543,9 @@ export class PostgresEngine implements BrainEngine {
     // it. Pre-v91 brains crash without the column; bootstrap adds it before
     // SCHEMA_SQL replay creates the index.
     const needsPagesGeneration = probe.pages_exists && !probeCr.pages_generation_exists;
+    // v0.41.31 (v108): pages.embedding_signature for real stale semantics.
+    // No SCHEMA_SQL index references it; bootstrap is defense-in-depth.
+    const needsPagesEmbeddingSignature = probe.pages_exists && !probeCr.pages_embedding_signature_exists;
 
     if (!needsPagesBootstrap && !needsLinksBootstrap && !needsChunksBootstrap
         && !needsPagesDeletedAt && !needsMcpLogBootstrap && !needsSubagentProviderId
@@ -548,7 +554,8 @@ export class PostgresEngine implements BrainEngine {
         && !needsOauthClientsBootstrap && !needsSourcesArchive
         && !needsPagesLastRetrievedAt
         && !needsPagesProvenance
-        && !needsContextualRetrievalColumns && !needsPagesGeneration) return;
+        && !needsContextualRetrievalColumns && !needsPagesGeneration
+        && !needsPagesEmbeddingSignature) return;
 
     process.stderr.write('  Pre-v0.21 brain detected, applying forward-reference bootstrap\n');
 
@@ -772,6 +779,15 @@ export class PostgresEngine implements BrainEngine {
       // later; bootstrap only adds the column. v91 is idempotent.
       await conn.unsafe(`
         ALTER TABLE pages ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1;
+      `);
+    }
+
+    if (needsPagesEmbeddingSignature) {
+      // v108 (pages_embedding_signature): embedding provenance for real stale
+      // semantics. NULL grandfathered. v108 runs later via runMigrations and
+      // is idempotent.
+      await conn.unsafe(`
+        ALTER TABLE pages ADD COLUMN IF NOT EXISTS embedding_signature TEXT;
       `);
     }
   }
@@ -2093,36 +2109,88 @@ export class PostgresEngine implements BrainEngine {
     return rows.map((r) => rowToChunk(r as Record<string, unknown>));
   }
 
-  async countStaleChunks(opts?: { sourceId?: string }): Promise<number> {
-    const sql = this.sql;
-    // v0.41 (D4+D8+Codex r2 #11): the embed-skip filter requires JOIN
-    // pages so we always join — the pre-v0.41 "fast path" without join
-    // is gone. JSONB `?` existence check is cheap on the small set of
-    // skipped pages; full-scan benefits from the partial index on
-    // embedding IS NULL regardless.
-    //
-    // D7: source_id scoping. NULL/undefined = scan all sources;
-    // a value scopes to that source so `gbrain embed --stale --source X`
-    // does what it says.
-    if (opts?.sourceId === undefined) {
-      const [row] = await sql`
-        SELECT count(*)::int AS count
-        FROM content_chunks cc
-        JOIN pages p ON p.id = cc.page_id
-        WHERE cc.embedding IS NULL
-          AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
-      `;
-      return Number((row as { count?: number } | undefined)?.count ?? 0);
+  /**
+   * Build the stale-chunk WHERE clause + positional params for sql.unsafe.
+   * embed_skip always excluded. `signature` widens "stale" to include
+   * embedding_signature drift (NULL grandfathered). Shared by
+   * countStaleChunks + sumStaleChunkChars (parity with the PGLite sibling).
+   */
+  private buildStaleChunkWhere(opts?: { sourceId?: string; signature?: string }): { where: string; params: unknown[] } {
+    const params: unknown[] = [];
+    const conds: string[] = [];
+    if (opts?.signature !== undefined) {
+      params.push(opts.signature);
+      conds.push(`(cc.embedding IS NULL OR (p.embedding_signature IS NOT NULL AND p.embedding_signature <> $${params.length}))`);
+    } else {
+      conds.push(`cc.embedding IS NULL`);
     }
-    const [row] = await sql`
-      SELECT count(*)::int AS count
-      FROM content_chunks cc
-      JOIN pages p ON p.id = cc.page_id
-      WHERE cc.embedding IS NULL
-        AND p.source_id = ${opts.sourceId}
-        AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
+    conds.push(`NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')`);
+    if (opts?.sourceId !== undefined) {
+      params.push(opts.sourceId);
+      conds.push(`p.source_id = $${params.length}`);
+    }
+    return { where: conds.join(' AND '), params };
+  }
+
+  async countStaleChunks(opts?: { sourceId?: string; signature?: string }): Promise<number> {
+    // Always JOIN pages so the embed_skip + signature predicates apply.
+    // D7: source_id scoping. v0.41.31: optional signature widens staleness
+    // to embedding_signature drift (NULL grandfathered).
+    const { where, params } = this.buildStaleChunkWhere(opts);
+    const rows = await this.sql.unsafe(
+      `SELECT count(*)::int AS count
+         FROM content_chunks cc
+         JOIN pages p ON p.id = cc.page_id
+        WHERE ${where}`,
+      params as Parameters<typeof this.sql.unsafe>[1],
+    );
+    return Number((rows[0] as { count?: number } | undefined)?.count ?? 0);
+  }
+
+  async sumStaleChunkChars(opts?: { sourceId?: string; signature?: string }): Promise<number> {
+    // Sibling of countStaleChunks: same stale predicate, summing chunk_text
+    // length for the sync cost preview. ::bigint guards int4 overflow.
+    const { where, params } = this.buildStaleChunkWhere(opts);
+    const rows = await this.sql.unsafe(
+      `SELECT COALESCE(SUM(LENGTH(cc.chunk_text)), 0)::bigint AS chars
+         FROM content_chunks cc
+         JOIN pages p ON p.id = cc.page_id
+        WHERE ${where}`,
+      params as Parameters<typeof this.sql.unsafe>[1],
+    );
+    return Number((rows[0] as { chars?: number | string } | undefined)?.chars ?? 0);
+  }
+
+  async setPageEmbeddingSignature(slug: string, opts: { sourceId?: string; signature: string }): Promise<void> {
+    const sql = this.sql;
+    await sql`
+      UPDATE pages SET embedding_signature = ${opts.signature}
+      WHERE slug = ${slug} AND source_id = ${opts.sourceId ?? 'default'}
     `;
-    return Number((row as { count?: number } | undefined)?.count ?? 0);
+  }
+
+  async invalidateStaleSignatureEmbeddings(opts: { signature: string; sourceId?: string }): Promise<number> {
+    // NULL embeddings whose page signature is set AND differs from current.
+    // GRANDFATHER: NULL signature untouched. Feeds the NULL-embedding cursor
+    // so listStaleChunks stays unchanged. RETURNING → row count.
+    const params: unknown[] = [opts.signature];
+    let srcClause = '';
+    if (opts.sourceId !== undefined) {
+      params.push(opts.sourceId);
+      srcClause = ` AND p.source_id = $${params.length}`;
+    }
+    const rows = await this.sql.unsafe(
+      `UPDATE content_chunks cc
+          SET embedding = NULL, embedded_at = NULL
+         FROM pages p
+        WHERE cc.page_id = p.id
+          AND cc.embedding IS NOT NULL
+          AND p.embedding_signature IS NOT NULL
+          AND p.embedding_signature <> $1${srcClause}
+        RETURNING cc.page_id`,
+      params as Parameters<typeof this.sql.unsafe>[1],
+    );
+    return (rows as unknown[]).length;
   }
 
   async listStaleChunks(opts?: {
