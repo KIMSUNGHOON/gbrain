@@ -2,6 +2,73 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.41.30.0] - 2026-05-30
+
+**`gbrain lsd --save` (and `brainstorm --save`) now actually writes the
+committable `wiki/ideas/<slug>.md` file it always promised, makes the saved
+idea searchable, and tells you the truth when a save fails instead of always
+printing "Saved".**
+
+The old behavior was a quiet lie. `--save` printed `Saved to <slug>` every
+time, but under the hood it only did a lightweight database write. The help
+text promised a `.md` file on disk for you to commit to your brain repo, and
+that file never appeared. Worse, when the database write itself failed (which
+happens under PgBouncer transaction-mode), it still said "Saved" — a real LSD
+run reported success while `gbrain get <slug>` returned `page_not_found`.
+Nothing landed anywhere, and the only way to recover the idea was to scrape it
+back out of the terminal.
+
+Now the save runs through the same ingestion path the rest of gbrain uses. The
+page is written canonically (chunked and tagged, so `gbrain search` can find
+it), and when your `sync.repo_path` points at a real brain repo, the
+`wiki/ideas/<date>-<lsd|brainstorm>-<slug>.md` file is written to disk,
+rendered from the saved row so the two can't drift apart. The success message
+now names exactly which sinks landed. If nothing persisted, you get a loud
+`NOT persisted` error and a nonzero exit code, so a scripted `--save` can no
+longer be mistaken for success.
+
+Same-day ideas no longer clobber each other either: the slug gets a short
+random suffix, so two quick `lsd` runs on similar questions keep both files.
+
+How to use it:
+
+```
+gbrain config set sync.repo_path /path/to/your/brain   # if not already set
+gbrain lsd "why are agent tools converging" --save
+gbrain get wiki/ideas/2026-05-30-lsd-why-are-agent-tools-converging-<suffix>
+ls /path/to/your/brain/wiki/ideas/                     # the .md file is really there
+```
+
+No `sync.repo_path`? You still get the database page (queryable immediately),
+and the message tells you the file write was skipped. Nothing changes for
+`--json` callers (that path stays database-only, as before).
+
+### For contributors
+
+The disk write-through that `put_page` shipped in v0.38 was extracted into a
+shared `src/core/write-through.ts` helper that `put_page` and brainstorm save
+now both call, and it was upgraded to write atomically (unique temp file +
+rename) so a crash or a concurrently-running `gbrain sync` can never read a
+half-written `.md`. That hardens `put_page`'s own write-through as a side
+effect.
+
+## To take advantage of v0.41.30.0
+
+`gbrain upgrade` is all you need. There is no schema migration and no data
+backfill in this release. To confirm the fix:
+
+1. **Set a repo path if you haven't:** `gbrain config set sync.repo_path /path/to/your/brain`
+2. **Save an idea and verify both sinks:**
+   ```bash
+   gbrain lsd "test idea" --save
+   gbrain get <printed-slug>        # database page exists
+   ls /path/to/your/brain/wiki/ideas/   # the .md file exists
+   ```
+3. **If a save ever reports `NOT persisted`,** that is the new honest failure
+   path doing its job — check the stderr line above it for the underlying DB
+   or file error, then please file an issue with `gbrain doctor` output:
+   https://github.com/garrytan/gbrain/issues
+
 ## [0.41.29.0] - 2026-05-29
 
 **Your meeting transcripts that look like `**Garry Tan:** ...` now actually

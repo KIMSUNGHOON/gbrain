@@ -1,5 +1,13 @@
 # TODOS
 
+## brainstorm/lsd --save source-awareness (v0.42+)
+
+Filed from the `--save` dual-sink hardening wave (route through the canonical
+ingestion path: `importFromContent({noEmbed:true})` + the shared
+`writePageThrough` helper extracted from `put_page`).
+
+- [ ] **v0.42+: make `gbrain brainstorm/lsd --save` source-aware.** Today the save path always writes to `source='default'` — `persistSavedIdea` (`src/commands/brainstorm.ts`) hardcodes `sourceId ?? 'default'`, and there is no `--save`-side `--source` flag. Both sinks stay consistent at default (no live bug), but on a multi-source brain a generated idea can't be filed to a non-default source. **What:** add a `--source <id>` option to brainstorm/lsd, resolve it via `resolveSourceWithTier`, and thread `sourceId` into `persistSavedIdea` → `importFromContent({sourceId})` + `writePageThrough({sourceId})`. **Why:** complete the multi-source story for generated ideas; the disk layout already handles it. **Context:** `writePageThrough` and `resolvePageFilePath` already take `sourceId` and emit `.sources/<id>/<slug>.md` for non-default sources, and `importFromContent` already accepts `sourceId` — so the only missing piece is the CLI flag + threading. `runBrainstorm` (orchestrator) already accepts `sourceId` for the close/far READ side. **Depends on:** nothing; purely additive. Priority: P3 (default-source is the common case).
+
 ## v0.41.29.0 orphan source-scoping follow-ups (v0.42+)
 
 Filed from the v0.41.29.0 wave (bold-name-no-time pattern + orphan_ratio
