@@ -2,7 +2,7 @@
  * Reserved worker process exit codes — single source of truth shared by the
  * worker (which sets them) and the supervisor / CLI (which classify them).
  *
- * Why a dedicated code for the RSS watchdog drain: before v0.42.2.0 the
+ * Why a dedicated code for the RSS watchdog drain: before v0.42.5.0 the
  * watchdog called `gracefulShutdown('watchdog')` which set `running=false` and
  * let the process exit via natural cleanup → **exit code 0**. The supervisor
  * classifies code 0 as `clean_exit` and does NOT increment `crashCount`, so a

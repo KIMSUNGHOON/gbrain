@@ -1,11 +1,11 @@
 # TODOS
 
-## v0.42.2.0 watchdog / pooler-reap / lens-backlog follow-ups (v0.42+)
+## v0.42.5.0 watchdog / pooler-reap / lens-backlog follow-ups (v0.42+)
 
-Deferred from the v0.42.2.0 wave (issue #1678). The shipped fixes are complete
+Deferred from the v0.42.5.0 wave (issue #1678). The shipped fixes are complete
 and tested; these are documented tradeoffs and stronger-but-bigger versions.
 
-- [ ] **P2 — `claim` idempotent recovery.** v0.42.2.0 deliberately does NOT
+- [ ] **P2 — `claim` idempotent recovery.** v0.42.5.0 deliberately does NOT
   inline-retry `claim` (a retry after the `UPDATE...RETURNING` committed but the
   socket died could double-claim a job); instead the worker poll loop reconnects
   and re-claims on the next tick. Codex independently flagged the residual: if

@@ -93,7 +93,7 @@ export interface ChildWorkerSupervisorOpts {
   cleanRestartBudgetBackoffMs?: number;
 
   /**
-   * v0.42.2.0 (issue #1678) — RSS-watchdog loop breaker, cause-keyed and
+   * v0.42.5.0 (issue #1678) — RSS-watchdog loop breaker, cause-keyed and
    * INDEPENDENT of crashCount/max_crashes. A watchdog drain
    * (WORKER_EXIT_RSS_WATCHDOG) means the worker hit its memory cap, not that
    * the code is defective — so it does NOT count toward max_crashes (that

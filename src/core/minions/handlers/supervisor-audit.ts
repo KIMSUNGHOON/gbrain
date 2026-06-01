@@ -141,7 +141,7 @@ export interface CrashSummary {
   by_cause: {
     runtime_error: number;
     oom_or_external_kill: number;
-    /** v0.42.2.0: worker drained itself because RSS crossed the watchdog cap
+    /** v0.42.5.0: worker drained itself because RSS crossed the watchdog cap
      *  (issue #1678). A real problem (the cap is too low for the workload, or a
      *  leak) but distinct from an OOM-killer SIGKILL — surfaced as its own
      *  bucket so operators see "raise --max-rss" signal, not generic crashes. */

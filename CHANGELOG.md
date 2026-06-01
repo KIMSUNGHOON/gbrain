@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.42.2.0] - 2026-06-01
+## [0.42.5.0] - 2026-06-01
 
 **If your background worker has been dying every few minutes and the logs keep
 blaming the database, this release explains why and stops it. The real cause was
@@ -67,7 +67,7 @@ Most of this is automatic on upgrade. To use the new pieces:
   check that warns (with the drain command) when eligible pages pile up under a
   pack that doesn't run the phase.
 
-### To take advantage of v0.42.2.0
+### To take advantage of v0.42.5.0
 
 `gbrain upgrade` applies everything. No schema migration in this release. If
 `gbrain doctor` still flags a watchdog loop after upgrade:

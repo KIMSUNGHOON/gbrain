@@ -1,7 +1,7 @@
 /**
  * Auto-sized default for the worker RSS watchdog cap (issue #1678).
  *
- * The pre-v0.42.2.0 default was a flat 2048MB — absurdly low for any brain
+ * The pre-v0.42.5.0 default was a flat 2048MB — absurdly low for any brain
  * doing embeddings (working set ~10GB), so the watchdog drained legit work on
  * every heavy cycle and produced a silent ~400×/24h respawn loop. The watchdog
  * is LEAK detection, not a container-OOM metric, so the default should be
