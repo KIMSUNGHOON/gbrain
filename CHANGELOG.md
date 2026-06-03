@@ -42,6 +42,102 @@ Things to know about: the sync bookmark (`last_commit`) still only advances when
 - **Vanished-on-disk added files are skipped, not failed.** A file added in the diff but deleted from disk by a commit after the pin (normal forward delete) is skipped and checkpointed instead of blocking the run.
 - **Cleaner single-flight backpressure.** `performSync` throws a typed `SyncLockBusyError`; the Minion `sync` handler catches it and marks the job *skipped* (not failed), so a cron/autopilot tick that hits a held lock defers to the holder without polluting the failed-job/crash metrics.
 - **Tests.** `test/sync-resumable-import.serial.test.ts` (13 cases): convergence regression, resume-skips-checkpointed, pinned-target/forward-drift, history-rewrite re-pin, `last_sync_at` not bumped on a blocked run + good-file banking, vanished-file skip, dry-run/empty-diff, plus pure-helper coverage for the fingerprint, clamp, and pool-budget math.
+## [0.42.16.0] - 2026-06-02
+
+**`gbrain doctor` now tells you the brain is OOM-looping in one line, ranks every
+problem by root cause, auto-drains stuck atom backlogs, and flags a thrashing DB
+pool — so you never have to grep a worker log to learn why the brain is
+unhealthy.**
+
+When a worker dies in a loop, the loud errors used to all point at the database
+(connection dropped, lock-renewal-failed) while the real cause — the worker
+running out of memory and getting drained by its own watchdog — scrolled by once
+and got buried. Finding it took hours. The fixes that stop the loop shipped in
+v0.42.5.0; this release makes the cause the first thing you see, and self-heals
+the cases that don't need a human.
+
+Run `gbrain doctor`. If a worker is OOM-looping you now get one line:
+`[FAIL] worker_oom_loop → Worker OOM-looping: cap=8192MB, 12 watchdog kills/24h →
+raise --max-rss`. The top of the report is a new "Top issues (ranked by cause)"
+block that puts root causes above downstream noise — the connection and queue
+errors that are really just symptoms get tagged "(likely downstream of
+worker_oom_loop)" instead of competing for your attention.
+
+### How to use it
+
+```
+gbrain doctor                 # human report, cause-ranked at the top
+gbrain doctor --json | jq .top_issues   # ranked issues for your agent to act on
+gbrain config set autopilot.auto_drain.enabled false   # opt out of auto-drain
+```
+
+### What's new
+
+- **`worker_oom_loop` doctor check** — the single authoritative OOM-loop signal.
+  It unions both worker modes: supervised workers (from the supervisor audit) and
+  bare `gbrain jobs work` workers (from the job table's watchdog-abort rows), so
+  it can't miss either. Names the memory cap (or the auto-sized default when the
+  breaker didn't stamp one) and the fix. Stays silent on brains that never OOM'd.
+- **Cause-ranked doctor output** + a `top_issues` array in `gbrain doctor --json`
+  so an agent acts on the root cause without re-deriving the ranking. A downstream
+  link is asserted ONLY for known, real cause→effect edges (e.g. queue aborts are
+  caused by the OOM kill) — never guessed from two checks happening to fail at the
+  same time.
+- **`pool_reap_health` check** — warns when a transaction-mode pooler is thrashing
+  (many socket reaps per hour) and fails when reconnects are actually failing
+  ("not auto-recovering"). The recovered-vs-stuck split no other signal expressed.
+- **Autopilot auto-drains a stuck `extract_atoms` backlog** on a cadence when your
+  schema pack doesn't declare the phase — the silent backlog that used to grow for
+  weeks with zero signal. Default on, bounded by a per-day spend cap, submitted as
+  a protected job so no remote/MCP caller can trigger the Haiku spend.
+
+### Things to know after upgrade
+
+- The new checks are quiet on a healthy brain — they only surface during a real
+  incident.
+- `autopilot.auto_drain` defaults on with a $2/day cap (~6 drains/day). It fires
+  only when the backlog exceeds 25 pages AND your pack doesn't declare
+  `extract_atoms` (i.e. the routine cycle isn't already handling it). Tune via
+  `autopilot.auto_drain.{enabled,threshold,window_seconds,max_usd_per_day}`.
+
+Evidence + the mechanical foundation this builds on: #1678 / #1735.
+
+### Itemized changes
+
+- `src/commands/doctor.ts` — new `computeWorkerOomLoopCheck` (unions supervisor
+  `rss_watchdog` crashes + `minion_jobs` watchdog-aborts; cap from the breaker
+  alert or `resolveDefaultMaxRssMb()` fallback) and `computePoolReapHealthCheck`;
+  cause-ranked "Top issues" header in `outputResults`; `top_issues` on
+  `DoctorReport` (additive, schema_version stays 2); the `supervisor` causeStr now
+  shows `rss=N (see worker_oom_loop)`; the `queue_health` watchdog message
+  cross-references `worker_oom_loop`.
+- `src/core/doctor-cause-rank.ts` (NEW) — pure `rankIssues` + root/symptom tiers +
+  evidence-gated `downstream_of` (real edges only) + a drift guard exported for
+  the test.
+- `src/core/audit/pool-recovery-audit.ts` (NEW) — reap/reconnect audit on the
+  shared audit-writer; error summaries redacted via `redactConnectionInfo`.
+- `src/core/postgres-engine.ts` — `reconnect()` accepts the triggering error and
+  records `reap_detected` (CONNECTION_ENDED) vs `reconnect_other`, then
+  `reconnect_succeeded`/`reconnect_failed`, so only true pooler reaps are labeled.
+- `src/core/retry.ts` + `src/core/retry-matcher.ts` — the retry reconnect callback
+  threads the error; new `isConnectionEndedError` classifier.
+- `src/core/cycle/extract-atoms-drain.ts` — new `runExtractAtomsDrainForSource`
+  shared helper (one drain path for the CLI `--drain`, the Minion handler, and
+  autopilot); `src/commands/dream.ts` refactored to call it.
+- `src/commands/jobs.ts` — `extract-atoms-drain` Minion handler;
+  `src/core/minions/protected-names.ts` adds it to `PROTECTED_JOB_NAMES`.
+- `src/commands/autopilot.ts` — per-source auto-drain submission with a UTC-day
+  time-sloted idempotency key + daily cap; `src/core/config.ts` adds
+  `autopilot.auto_drain.*` config + the `autopilot.` key prefix.
+- `src/core/minions/handlers/supervisor-audit.ts` — `readRecentSupervisorEvents`
+  reads current + previous ISO week so a 24h window can't lose a week-boundary
+  loop.
+- `src/core/doctor-categories.ts` — registers `worker_oom_loop` + `pool_reap_health`
+  under ops.
+- Tests: `test/doctor-cause-rank.test.ts`, `test/doctor-worker-oom-loop.test.ts`,
+  `test/doctor-pool-reap-health.test.ts`, `test/audit/pool-recovery-audit.test.ts`,
+  `test/extract-atoms-drain-handler.test.ts`, `test/autopilot-auto-drain-wiring.test.ts`,
+  plus extensions to `test/extract-atoms-drain.test.ts`.
 ## [0.42.15.0] - 2026-06-02
 
 **Commands print real data when you run them from a subagent, a pipe, or cron, not just when you have a terminal.** A handful of gbrain commands quietly changed what they printed based on whether a terminal was attached. Run them from a coding agent, a `| cat` pipe, or a cron job and you'd get JSON when you wanted human text, or nothing useful at all. The read commands (`get`, `list`, `search`, `query`) were already fine; this fixes the ones that weren't.
