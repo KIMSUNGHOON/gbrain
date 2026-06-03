@@ -65,6 +65,180 @@ Verify: `gbrain doctor` should show a `wedged_queue` check (it reads `ok` on a h
 - `queue.ts`/`jobs.ts`: queue-scoped `getStats` wedge block + `jobs stats` WEDGED line.
 - Tests: `supervisor-wedge`, `worker-supervised-db-probe`, `doctor-wedged-queue`, `queue-getstats-wedge`, plus `child-worker-supervisor` additions (behavioral restart coverage + PGLite SQL semantics for every reviewed edge case + structural regression guards). Plan went through eng review + a Codex outside-voice pass; all 16 findings folded in.
 
+## [0.42.21.0] - 2026-06-02
+
+**Your nightly `gbrain dream` stops silently losing every database phase.** If you run gbrain on Postgres (local or Supabase), the dream cycle has been quietly failing: the `lint` and `backlinks` phases work, then `sync`, `synthesize`, `embed`, and the rest all blow up with `No database connection: connect() has not been called`. The extract phase reports "created 0 links" while actually dropping every row. Run the same phases one at a time in separate commands and they all work — only the full cycle breaks. The result: your brain quietly stops staying up to date, and the cycle leaves a stuck lock behind.
+
+The cause turned out to be a single sentence of logic. The dream cycle opens one long-lived database connection and reuses it for the whole run. But along the way, small helper steps (the lint config probe, doctor checks) briefly open their own connection handle. When those short-lived helpers finished and closed *their* handle, they were actually closing the *shared* connection the rest of the cycle still needed. Every later phase then found the connection gone.
+
+This release teaches gbrain who actually owns the shared connection. Only the engine that opened it is allowed to close it; the short-lived helpers leave it alone. The fix lands automatically:
+
+```
+gbrain upgrade
+gbrain dream --dir <your-brain>   # every DB phase now reports ✓, lock releases cleanly
+```
+
+Nothing to configure. If your dream cycle was the broken kind, it just starts working.
+
+### Under the hood
+
+The shared connection is the module-level `sql` singleton in `src/core/db.ts`. It was only ever nulled by `db.disconnect()` — postgres.js auto-reconnects its own internal pool and never touches our reference — so the singleton going null mid-cycle was always a "borrower" engine's disconnect cascading into `db.disconnect()`, never an idle-pooler drop. `PostgresEngine.disconnect()` called `db.disconnect()` for any `_connectionStyle === 'module'` engine with no check for whether that engine actually created the singleton.
+
+The fix adds an ownership token. `db.connect()` now returns whether THIS call created the singleton — decided atomically inside `connect()`, since there is no `await` between its `if (sql)` null-check and the synchronous `sql = postgres(...)` assignment, so two connects can't both claim creation. `PostgresEngine` stores that as `_ownsModuleSingleton` and only calls `db.disconnect()` when it owns the connection; borrowers clear their own marker and leave the shared pool alone. Two adjacent hardenings landed in the same pass: `db.disconnect()` now snapshots and nulls `sql` *before* awaiting `end()` (so a concurrent connect can't join a pool that's already closing), and `reconnect()` uses a shared in-flight promise so concurrent callers await the same reconnect instead of racing a half-rebuilt pool.
+
+Earlier partial fixes addressed symptoms: v0.41.27.0's retry-with-reconnect rescued the batch-write phases (extract) but not `sync`/`synthesize`, which don't go through the retry path; v0.42.5.0 stopped the lint phase from being a borrower but left the structural hole open for every other helper. This closes the hole at the source.
+
+### To take advantage of v0.42.21.0
+
+`gbrain upgrade` applies this automatically — there are no migrations or config to set. To confirm it took:
+
+1. Run a cycle and watch the phases:
+   ```bash
+   gbrain dream --dir <your-brain> --dry-run
+   ```
+   Every DB phase should report `✓`, not `✗ ... connect() has not been called`.
+2. Confirm no stuck lock:
+   ```bash
+   psql <your-db> -c "SELECT count(*) FROM gbrain_cycle_locks;"   # expect 0
+   ```
+3. If a DB phase still fails, please file an issue at https://github.com/garrytan/gbrain/issues with the output of `gbrain doctor` and the cycle's stderr.
+
+### Itemized changes
+
+- **`gbrain dream` on Postgres completes every phase.** The module-singleton ownership fix (`_ownsModuleSingleton` in `src/core/postgres-engine.ts`, `db.connect()` returning the creator token in `src/core/db.ts`) means a short-lived probe engine's `disconnect()` can no longer null the shared connection the cycle is using. Closes #1404, #1471, #1619 (and the symptom tracked in #1570/#1535).
+- **Connection teardown is concurrency-safe.** `db.disconnect()` snapshots + nulls the singleton before awaiting `end()`; `PostgresEngine.reconnect()` shares one in-flight `_reconnectPromise` so concurrent callers await it instead of racing.
+- **Tests:** new `test/postgres-engine-singleton-ownership.test.ts` (source-level guardrails for the ownership contract), an expanded DB-gated behavioral matrix in `test/e2e/postgres-engine-disconnect-idempotency.test.ts` (owner/borrower, creation-not-role, symmetric CLI-exit, owner-reconnect-with-live-borrower), a module-style asymmetry case in `test/postgres-engine-getter-selfheal.test.ts`, and the #1570 shared-recovery regression updated to assert the fixed contract.
+
+### For contributors
+
+This is the canonical landing for a long-standing class with ~15 competing community PRs and zero merged. Thanks to **@nullhex-io** (#1651) and **@joelwp** (#1667) — the ownership-flag approach that shipped, and to **@BrendanGahan**, **@xaviroblessarries**, and the other #1471 reporters for the precise root-cause walkthroughs. Three follow-ups are filed in `TODOS.md` (connection-lifecycle hardening under concurrent module connects, facts-queue drain on the dream/fall-through paths, stale ConnectionManager refresh after reconnect) — all pre-existing and not reachable in current gbrain.
+## [0.42.20.0] - 2026-06-03
+
+**Three ways GBrain could freeze or go silent are fixed.** This release closes a
+reliability cluster around how GBrain shuts down a command and talks to AI
+providers. If you've seen `gbrain capture` hang forever, `gbrain dream` print
+"connect() has not been called" on Postgres, or `gbrain search` return nothing
+and then say "engine.disconnect() did not return within 10000ms" — those are all
+fixed.
+
+What was happening, in plain terms:
+
+- **`gbrain capture` froze and locked you out (#1762).** On a longer page,
+  capture finishes, prints the receipt, then kicks off a small background job to
+  extract facts. On the embedded PGLite database, GBrain was closing the database
+  *while that job was still running*, which spun the close into a 100%-CPU loop
+  that never returned and held the database lock open. Every later `gbrain`
+  command then died with "Timed out waiting for PGLite lock" until you killed the
+  stuck process. Now GBrain waits for that background work to finish (or cleanly
+  cancels it) before closing the database.
+- **`gbrain dream` failed mid-cycle on Postgres (#1745).** A brief connection
+  blip made GBrain rebuild its shared database connection — but the rebuild
+  yanked the connection out from under other work happening at the same time, so
+  the `sync`, `synthesize`, and link-extraction phases threw "connect() has not
+  been called" and produced zero pages every cycle. Now a blip recovers without
+  tearing down the shared connection (Postgres heals dead sockets on its own).
+- **`gbrain search` / `query` went silent (#1775, regression from 0.22.8).**
+  Search now blends keyword + vector results, which means it embeds your query
+  first. If your embedding provider stalled (one user's did), the embed never
+  came back, so search never fell through to keyword results and the command
+  timed out with no output. Now the query-embed is time-bounded (~6 seconds, well
+  under the exit watchdog), so a stalled provider falls back to keyword results
+  instead of hanging.
+
+**Under the hood, one unifying change makes this whole class of bug harder to
+reintroduce:**
+
+- **Every background write is now drained before exit.** GBrain has four
+  "fire-and-forget" sinks that write to the database after a command returns its
+  answer (last-retrieved tracking, fact extraction, the search cache, and eval
+  capture). Each had independently caused or risked the lock-pin. They now
+  register with one background-work registry that GBrain drains on every exit
+  path. A fifth sink added later auto-participates — no one has to remember it.
+- **Every outbound AI call has a timeout.** Chat, expansion, embeddings, OCR,
+  and multimodal calls now carry a default wall-clock deadline (configurable via
+  `GBRAIN_AI_CHAT_TIMEOUT_MS` / `GBRAIN_AI_EMBED_TIMEOUT_MS` /
+  `GBRAIN_AI_MULTIMODAL_TIMEOUT_MS`). A stalled provider socket can no longer
+  hang a command forever. This covers the default Anthropic path too, not just
+  OpenAI-compatible providers.
+
+Nothing changes in how you use GBrain. These are all teardown/reliability fixes.
+
+Credit: @ElliotDrel diagnosed the corrected #1762 root cause (the un-drained
+facts queue, not the originally-suspected missing teardown contract) and wrote
+the first fix in PR #1763, which this release incorporates and hardens. Thanks to
+the #1745 and #1775 reporters for the precise repros.
+
+### To take advantage of v0.42.20.0
+
+`gbrain upgrade` is all you need — these are runtime fixes, no migration or
+schema change. After upgrading:
+
+1. If `gbrain capture` was hanging on PGLite, it now returns to the shell and the
+   next command runs without "Timed out waiting for PGLite lock".
+2. If `gbrain dream` was printing "connect() has not been called" on Postgres,
+   run `gbrain dream` again and check `synth_pages > 0`.
+3. If `gbrain search` returned nothing, it now returns ranked keyword results
+   within a few seconds even when your embedding provider is down. Tune the
+   query-embed deadline with `GBRAIN_QUERY_EMBED_TIMEOUT_MS` (default 6000) if
+   your provider is reliably slower.
+
+### Itemized changes
+
+- **`src/core/background-work.ts` (NEW):** process background-work registry —
+  `registerBackgroundWorkDrainer`, `drainAllBackgroundWorkForCliExit`, a
+  `Map<name, drainer>` (idempotent registration), explicit `(order, name)` drain
+  order (facts first for the live-engine window), and an awaited `abort()` for
+  stragglers. `__registerDrainerForTest` test seam.
+- **Four sinks register drainers:** `facts/queue.ts` (order 0, `abort` =
+  `shutdown()` which cancels a hung facts:absorb Haiku), `last-retrieved.ts`
+  (order 1), `search/hybrid.ts` (order 2, with `awaitPendingSearchCacheWrites`
+  now bounded — was an unbounded `Promise.allSettled`), `eval-capture.ts`
+  (order 3, new `awaitPendingEvalCaptures` + tracked `captureEvalCandidate`).
+- **`src/cli.ts`:** both the op-dispatch finally AND `handleCliOnly`'s finally
+  call `drainAllBackgroundWorkForCliExit()` before `engine.disconnect()`;
+  `handleCliOnly` gains the force-exit defense (the drain is the causal fix, the
+  timer is secondary). Op-dispatch's error path converts `process.exit(1)` →
+  `exitCode + return` so the finally still drains + disconnects on error.
+- **`src/core/ai/gateway.ts`:** `withDefaultTimeout(caller, ms)` composes a
+  default deadline with any caller signal (`AbortSignal.any`, shorter wins),
+  threaded into `chat()` (`generateText`), `expand()` (`generateObject` — was
+  unbounded), `generateOcrText()` (was unbounded), and the per-sub-batch embed
+  call; multimodal direct fetches get a per-request timeout. Per-touchpoint
+  defaults: chat 300s, embed/multimodal 60s. `embedQuery` accepts + forwards
+  `abortSignal`.
+- **`src/core/postgres-engine.ts`:** `reconnect()` branches on connection style.
+  Module-singleton engines re-establish idempotently via `db.connect()` +
+  refresh the ConnectionManager read pool, never `db.disconnect()` (no null
+  window). Instance pools keep teardown+recreate.
+- **`src/core/search/hybrid.ts`:** one shared `QueryEmbedDeadline` (default 6s,
+  `GBRAIN_QUERY_EMBED_TIMEOUT_MS`) threaded into both the cache-lookup embed and
+  the inner embed via `embedQueryBounded` (abortSignal aborts the socket;
+  `Promise.race` guarantees the await rejects even if the provider ignores the
+  abort) → the existing keyword fallback engages.
+- **Tests:** `test/core/background-work.test.ts`, `test/search/query-embed-deadline.test.ts`,
+  `test/eval-capture-drain.test.ts`, a `gbrain capture` exit-cleanly case in
+  `test/e2e/pglite-cli-exit.serial.test.ts`, the `#1745` reconnect E2E in
+  `test/e2e/postgres-reconnect-singleton.test.ts`, and updated structural
+  assertions in `test/fix-wave-structural.test.ts`.
+
+#### Deferred (follow-ups, not in this release)
+- Decouple the op-dispatch force-exit timer so it wraps `disconnect()` only and
+  fix its misleading message.
+- Convert `runSync`'s ~20 internal `process.exit` sites to `exitCode + return`
+  for graceful drain on sync error exits (today they avoid the hang by skipping
+  disconnect; worst case is a transient PGLite stale-lock that self-heals).
+- A gateway-level idle-timeout (vs absolute) for streaming chat.
+## [0.42.19.0] - 2026-06-02
+
+**`gbrain skillopt --write-capture` rollouts now get full tool schemas, closing the last gap in the AI SDK v6 tool-loop fix.** The v6 fix that got agent loops working again on non-Anthropic providers (DeepSeek, Qwen, Groq, local models) shipped in v0.42.11.0 — but it fixed only one of the two places skillopt builds tool definitions. The `--write-capture` path (the virtual put_page/submit_job/file_upload registry the optimizer uses to test write-flavored skills) still handed the model a stripped-down schema with `enum`, `default`, and `items` dropped, so the optimizer couldn't see a tool's allowed values and proposed invalid calls. Both builders now use the same shared mapper.
+
+### What changed
+
+- **SkillOpt write-capture schema fidelity** (`src/core/skillopt/write-capture.ts`): the virtual-write tool builder now uses the shared `paramDefToSchema` mapper, matching the `rollout.ts` builder fixed in v0.42.11.0. `enum`/`default`/`items` survive into the schema the model sees.
+- **Regression hardening for the v6 fix** (`test/ai/gateway-tools-schema.test.ts`): a real-AI-SDK integration test (`generateText` + `MockLanguageModelV3`, no network) pins that the tool schema + tool-result message shapes the gateway produces are accepted by AI SDK v6 — with guards that the pre-fix bare-`{jsonSchema}` object AND the raw-tool-result-in-a-user-message shape both throw. The kind of test the original fix lacked, so the convergent v6 fix can't silently regress.
+- **SkillOpt schema-metadata test** (`test/skillopt/rollout-schema.test.ts`): asserts `enum` survives in BOTH the rollout and write-capture tool builders.
+
+Closes the remaining surface of #1782 / #1764. The core fix was a convergent effort — credit michaeladair44, justemu, and JE4NVRG for the original diagnoses and patches.
 ## [0.42.18.0] - 2026-06-03
 
 **A scheduled `gbrain sync` can no longer spin forever and pile up dead processes, and `gbrain doctor` stops showing "100% of pages need link extraction" right after you ran the thing that's supposed to fix it.**
@@ -130,6 +304,7 @@ Things to know about: the sync bookmark (`last_commit`) still only advances when
 - **Vanished-on-disk added files are skipped, not failed.** A file added in the diff but deleted from disk by a commit after the pin (normal forward delete) is skipped and checkpointed instead of blocking the run.
 - **Cleaner single-flight backpressure.** `performSync` throws a typed `SyncLockBusyError`; the Minion `sync` handler catches it and marks the job *skipped* (not failed), so a cron/autopilot tick that hits a held lock defers to the holder without polluting the failed-job/crash metrics.
 - **Tests.** `test/sync-resumable-import.serial.test.ts` (13 cases): convergence regression, resume-skips-checkpointed, pinned-target/forward-drift, history-rewrite re-pin, `last_sync_at` not bumped on a blocked run + good-file banking, vanished-file skip, dry-run/empty-diff, plus pure-helper coverage for the fingerprint, clamp, and pool-budget math.
+
 ## [0.42.16.0] - 2026-06-02
 
 **`gbrain doctor` now tells you the brain is OOM-looping in one line, ranks every

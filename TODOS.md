@@ -1,5 +1,100 @@
 # TODOS
 
+## v0.42.21.0 module-singleton ownership follow-ups (v0.42+)
+
+Filed from the v0.42.21.0 wave (#1404/#1471/#1619 — the dream-cycle
+"connect() has not been called" class, fixed via `_ownsModuleSingleton`).
+Surfaced by the Codex outside-voice review (finding #4) and deliberately scoped
+OUT — pre-existing, and the ownership fix *reduces* its window. See plan +
+GSTACK REVIEW REPORT at
+`~/.claude/plans/system-instruction-you-are-working-lazy-allen.md`.
+
+- [ ] **P3 — Stale `ConnectionManager` read-pool after an owner `reconnect()`.**
+  A module-style borrower engine caches the singleton at connect time via
+  `connectionManager.setReadPool(db.getConnection())` (`postgres-engine.ts:~208`).
+  When the OWNER engine calls `reconnect()` (the batchRetry path), it tears down
+  the old module singleton and builds a fresh one — but the borrower's
+  `connectionManager` still holds the OLD (ended) pool. The borrower's normal
+  query path is fine (`this.sql` → `db.getConnection()` resolves the NEW
+  singleton), so this is invisible on read/write. The edge is
+  `initSchema()`, which routes DDL through `connectionManager.ddl()`
+  (`postgres-engine.ts:~253`) — a borrower running initSchema after an owner
+  reconnect would hit the dead pool. Pre-existing (not introduced by #1471), and
+  the ownership fix makes owner reconnects *rarer* (the singleton no longer gets
+  nulled by borrowers, so reconnect only fires on genuine transient drops), which
+  shrinks the window. Real fix: refresh a borrower's `connectionManager` read
+  pool lazily from `db.getConnection()` on use, or have `db.connect()`/reconnect
+  publish a generation counter the manager checks. Defer until a borrower is
+  observed running `initSchema()` mid-process (no current caller does).
+
+- [ ] **P2 — Ownership state can desync from the shared singleton under
+  CONCURRENT module connect/reconnect.** Both adversarial reviewers (Codex +
+  Claude) independently flagged this. `_ownsModuleSingleton` is per-engine state
+  about a shared (module-level) resource, so it can migrate: if a borrower calls
+  `connect()`/`reconnect()` during the window when an owner's `reconnect()` has
+  nulled `sql` (`db.ts` snapshot-early-null) but not yet rebuilt it, the borrower
+  creates the new singleton and becomes owner; the owner re-connects as a
+  borrower; the short-lived borrower's later `disconnect()` then closes the live
+  pool the demoted owner still uses — the original bug, in reverse. ALSO: the
+  audit-import + `connectionManager.disconnect()` awaits in `PostgresEngine.disconnect()`
+  and the publish-before-`SELECT 1` window in `db.connect()` let a concurrent
+  connect join a dying/unverified pool. NOT REACHABLE in current gbrain — cycle
+  phases are sequential on one awaited engine, borrowers are nested within a
+  phase, the parallel-sync worker pool uses INSTANCE engines (not the singleton),
+  and facts/last-retrieved background writes reuse the owner engine (no second
+  module engine). The ownership fix is correct for every reachable path and is
+  fully tested. The structural fix (which removes the unenforced "no concurrent
+  module connect" invariant) is the refcount/lease-in-db.ts approach Codex argued
+  in the plan review: keep the lifecycle state WITH the shared resource so it
+  can't desync per-engine, bounded against CLI-hang by a top-level forced
+  cleanup. Do this BEFORE introducing any concurrent module-engine connect path.
+
+- [ ] **P3 — `dream` + CLI_ONLY fall-through paths don't drain the facts /
+  last-retrieved queues before the owner disconnect.** The op-dispatch path
+  (`cli.ts:~282-314`) drains `getFactsQueue().drainPending()` +
+  `awaitPendingLastRetrievedWrites()` before `engine.disconnect()`; the `dream`
+  owner-disconnect (`cli.ts:~1164`) and the fall-through owner-disconnect
+  (`cli.ts:~1785`) do not. If the dream cycle ever enqueues a facts:absorb /
+  last-retrieved write that's still in flight at disconnect, the owner nulls the
+  singleton and the write throws "No database connection". Pre-existing (not
+  introduced by the #1471 ownership fix), surfaced by the Claude adversarial
+  review (F5). Fix: hoist the same drain-before-disconnect block the op-dispatch
+  path uses into a shared helper and call it on all three owner-disconnect sites.
+## v0.42.x AI SDK v6 tool-schema fix follow-ups (#1782/#1764)
+
+Surfaced by the codex outside-voice pass during `/plan-eng-review` and
+deliberately scoped OUT of the tool-schema fix (it's pre-existing + a separate
+structural change). Plan + GSTACK REVIEW REPORT at
+`~/.claude/plans/system-instruction-you-are-working-abstract-willow.md`.
+
+- [ ] **P1 — Gateway toolLoop crash-replay sends a malformed ModelMessage
+  history.** The gateway path never persists the tool-result feedback message:
+  `toolLoop` pushes `{role:'user', content: toolResultBlocks}` with `void
+  messageIdx` and NO persistence callback, so only assistant turns reach
+  `subagent_messages` (via `onAssistantTurn`). On any multi-turn resume,
+  `loadPriorMessages` (`subagent.ts:769`) returns
+  `[user, assistant(tool-call), assistant(...), ...]` with the tool-result
+  messages MISSING — a history the real AI SDK v6 rejects ("tool result missing
+  for tool call"). The direct-Anthropic path reconciles this at
+  `subagent.ts:334-418` (synthesize + persist the tool-result turn before the
+  first chat call); the gateway branch does not. **Fresh runs — the actual
+  #1782/#1764 reports — are unaffected**, which is why the tool-schema fix
+  shipped without it. Two fix options: (a) add an `onToolResults` persistence
+  callback to `toolLoop` so the feedback message lands in `subagent_messages`,
+  or (b) mirror the direct-path reconciliation in the gateway branch of
+  `subagent.ts` before the first `gatewayToolLoop` chat. Either is a structural
+  change to the replay contract — own PR, own review. Caught because every
+  toolLoop/replay test stubs the transport and never inspects the input
+  messages; pair the fix with a `MockLanguageModelV3 + generateText` replay test
+  (the seam landed in `test/ai/gateway-tools-schema.test.ts`).
+
+- [ ] **P2 — SkillOpt `best.md` not written in `--no-mutate` runs.** From PR
+  #1708 (scoped out of the tool-schema wave as tangential): in `--no-mutate`
+  SkillOpt runs the accepted proposal isn't persisted because `acceptCandidate`
+  is gated by the mutate decision. Write it explicitly via `atomicWrite`
+  (`apply-edits.ts:311`) + `mkdirSync(recursive)` in
+  `runOptimizationLoop` (`src/core/skillopt/orchestrator.ts`). Small, own PR.
+
 ## v0.42.12.0 #1685 brain-health-as-solved follow-ups (v0.42+)
 
 Deferred from the v0.42.12.0 wave (issue #1685, the posture umbrella over #1678/#1735).
@@ -100,6 +195,7 @@ complete and tested; these are hardening/cleanup.
   run unbounded LLM rollouts with no deadline check. BudgetTracker still caps spend; the
   runtime guarantee is best-effort. Thread the deadline + abortSignal into those phases, or
   document runtime as best-effort.
+
 ## v0.42.7.0 extract-in-default-loop follow-ups (v0.42+)
 
 Filed from the v0.42.2.0 wave (#1696 link/timeline extraction freshness
@@ -1487,25 +1583,34 @@ Three items deferred:
   mutex, or document the constraint and assert single-flight at the
   call site.
 
-- [ ] **Retrofit `awaitPendingSearchCacheWrites` with the same bounded
-  timeout v0.41.8.0 added to `awaitPendingLastRetrievedWrites`.** The
-  v0.36.1.x #1090 fix at `src/core/search/hybrid.ts:36-45` shipped the
-  drain pattern without a timeout; v0.41.8.0 added the timeout + warn
-  pattern to the new `awaitPendingLastRetrievedWrites` helper. For
-  symmetry (and to close the same future-failure mode in the cache
-  drain), apply the same `Promise.race` + stderr warn pattern. ~15 LOC
-  + 2 unit cases. Pair this with the drain-helper extraction below.
+- [x] **Retrofit `awaitPendingSearchCacheWrites` with a bounded timeout.**
+  DONE in v0.42.20.0 (#1762 reliability wave): `awaitPendingSearchCacheWrites`
+  is now bounded (`Promise.race` + leftover count), matching
+  `awaitPendingLastRetrievedWrites`.
 
-- [ ] **Extract a shared `createDrainHelper<T>()` factory when a third
-  fire-and-forget surface appears.** Per D4 in the v0.41.8.0 eng
-  review: two surfaces is the threshold for noticing, three for
-  extracting. `src/core/search/hybrid.ts:awaitPendingSearchCacheWrites`
-  + `src/core/last-retrieved.ts:awaitPendingLastRetrievedWrites` are
-  the two surfaces today. When a third surface is added (or when the
-  timeout-symmetry retrofit above lands and the duplication becomes
-  load-bearing), extract a `src/core/drain-helper.ts` factory consumed
-  by both call sites. Pair with the symmetry retrofit so they fire
-  together as one focused refactor.
+- [x] **Extract a shared drain abstraction once a third fire-and-forget surface
+  appears.** DONE in v0.42.20.0: rule-of-four was met (last-retrieved, facts,
+  search-cache, eval-capture), so `src/core/background-work.ts` (a registry, not
+  a per-surface factory) is the single drain owner; each sink registers a
+  drainer and CLI exit calls `drainAllBackgroundWorkForCliExit`.
+
+- [ ] **(v0.42.20.0 follow-up) Convert `runSync`'s ~20 internal `process.exit`
+  sites to `exitCode + return`.** Today those error/cost-gate paths skip the
+  background-work drain + graceful disconnect (they avoid the #1762 hang by
+  skipping disconnect entirely; worst case is a transient PGLite stale-lock that
+  self-heals via stale-reclaim). The common sync SUCCESS path already drains via
+  handleCliOnly's finally. Convert for graceful drain on sync error exits.
+
+- [ ] **(v0.42.20.0 follow-up) Decouple the op-dispatch force-exit timer** so it
+  wraps `engine.disconnect()` only (it's armed before the handler today, doubling
+  as a blanket handler watchdog) and fix its misleading "engine.disconnect() did
+  not return…" message that fires even when the handler (not disconnect) was slow.
+
+- [ ] **(v0.42.20.0 follow-up) Gateway idle-timeout (vs absolute) for streaming
+  chat.** `withDefaultTimeout` uses an absolute `AbortSignal.timeout`; a streaming
+  generation actively producing tokens past the chat default (300s) would abort.
+  Non-streaming `generateText` makes this low-risk today; revisit if a real
+  long-stream caller trips it.
 
 ---
 ## v0.41 Eval-loop wave follow-ups (v0.42+)

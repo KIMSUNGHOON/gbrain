@@ -138,7 +138,7 @@ export interface WithRetryOpts {
    *
    * Engine-level callers (PostgresEngine.batchRetry) inject
    * `(ctx) => this.reconnect(ctx)` which already handles both module and
-   * instance pools, race-safe via `_reconnecting` guard.
+   * instance pools, race-safe via the `_reconnecting` guard.
    *
    * v0.42.x (#1685 CODEX #8): receives the triggering error so the engine can
    * classify it (pooler reap vs network/auth) for the pool-recovery audit. The
