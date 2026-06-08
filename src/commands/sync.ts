@@ -1084,9 +1084,11 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   if (opts.sourceId) {
     serr(`[gbrain phase] sync.validate_repo_state`);
     const { validateRepoState } = await import('../core/git-remote.ts');
-    const { recloneIfMissing } = await import('../core/sources-ops.ts');
-    const cfgRows = await engine.executeRaw<{ config: unknown }>(
-      `SELECT config FROM sources WHERE id = $1`,
+    const { recloneIfMissing, isOwnedClone, unownedHint } = await import(
+      '../core/sources-ops.ts'
+    );
+    const cfgRows = await engine.executeRaw<{ local_path: string | null; config: unknown }>(
+      `SELECT local_path, config FROM sources WHERE id = $1`,
       [opts.sourceId],
     );
     const cfg =
@@ -1095,13 +1097,26 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         : ((cfgRows[0]?.config ?? {}) as Record<string, unknown>);
     const remoteUrl = typeof cfg.remote_url === 'string' ? cfg.remote_url : null;
     if (remoteUrl) {
+      const ownSrc = {
+        id: opts.sourceId,
+        local_path: cfgRows[0]?.local_path ?? repoPath,
+        config: cfg,
+      };
       const state = validateRepoState(repoPath, remoteUrl);
       switch (state) {
         case 'healthy':
+          // No per-sync warning for an unowned-but-healthy source — it would
+          // spam every sync. The misconfig is surfaced by the doctor check
+          // (TODO1) instead. Healthy unowned paths sync read-only and are safe.
           break;
         case 'missing':
         case 'no-git':
         case 'not-a-dir':
+          // #1881: only re-clone a clone gbrain owns. An unowned local_path
+          // (the user's working tree) is refused loudly, never deleted.
+          if (!isOwnedClone(ownSrc)) {
+            throw new Error(unownedHint(ownSrc, state));
+          }
           serr(
             `[gbrain] auto-recovery: re-cloning "${opts.sourceId}" (clone state: ${state}).`,
           );
