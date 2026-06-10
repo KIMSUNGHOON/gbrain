@@ -381,27 +381,56 @@ async function main() {
   // must never be killed by a default deadline.
   const READ_OP_TIMEOUT_MS = 180_000;
   let forceExitTimer: ReturnType<typeof setTimeout> | undefined;
+  // Set when a wallclock bound fired. The abandoned (timed-out but still
+  // running) handler can hold ref'd sockets/timers that keep Bun's event loop
+  // alive after main() returns — so the finally must hard-exit after teardown
+  // on this path, or the timeout print is followed by an immortal process:
+  // the same zombie class, resurrected through the timeout door (adversarial
+  // review finding).
+  let wallclockTimedOut = false;
 
   try {
-    const ctx = await makeContext(engine, params);
+    const { withTimeout, OperationTimeoutError } = await import('./core/timeout.ts');
+    const wallclockMs = getCliOptions().timeoutMs ?? READ_OP_TIMEOUT_MS;
+    const onWallclockTimeout = (e: InstanceType<typeof OperationTimeoutError>) => {
+      const hint = getCliOptions().timeoutMs
+        ? ''
+        : ` (default ${e.ms}ms; pass --timeout=Ns to override)`;
+      console.error(`${e.label} timed out${hint}.`);
+      process.exitCode = 124;
+      wallclockTimedOut = true;
+    };
+
+    // Context build does DB I/O (resolveSourceId) and runs for EVERY op —
+    // a wedged pooler connection here would otherwise hang reads, writes,
+    // and admin alike with no bound at all (adversarial review finding).
+    let ctx: Awaited<ReturnType<typeof makeContext>>;
+    try {
+      ctx = await withTimeout(
+        makeContext(engine, params),
+        wallclockMs,
+        `gbrain ${command}: context`,
+      );
+    } catch (e: unknown) {
+      if (e instanceof OperationTimeoutError) {
+        onWallclockTimeout(e);
+        return; // the finally below still drains + disconnects, then exits
+      }
+      throw e;
+    }
+
     let rawResult: unknown;
     if (op.scope === 'read') {
-      const { withTimeout, OperationTimeoutError } = await import('./core/timeout.ts');
-      const readOpTimeoutMs = getCliOptions().timeoutMs ?? READ_OP_TIMEOUT_MS;
       try {
         rawResult = await withTimeout(
           op.handler(ctx, params),
-          readOpTimeoutMs,
+          wallclockMs,
           `gbrain ${command}`,
         );
       } catch (e: unknown) {
         if (e instanceof OperationTimeoutError) {
-          const hint = getCliOptions().timeoutMs
-            ? ''
-            : ` (default ${e.ms}ms; pass --timeout=Ns to override)`;
-          console.error(`${e.label} timed out${hint}.`);
-          process.exitCode = 124;
-          return; // the finally below still drains + disconnects
+          onWallclockTimeout(e);
+          return; // the finally below still drains + disconnects, then exits
         }
         throw e;
       }
@@ -459,6 +488,14 @@ async function main() {
     await drainAllBackgroundWorkForCliExit({ timeoutMs: 1000 });
     await engine.disconnect();
     if (forceExitTimer) clearTimeout(forceExitTimer);
+    // Wallclock-timeout path: teardown is done, but the ABANDONED handler
+    // (withTimeout races, it does not cancel) can still hold ref'd sockets /
+    // SDK retry timers that keep Bun's event loop alive indefinitely. With
+    // the hard-deadline timer just cleared, nothing else bounds that — exit
+    // explicitly. Safe: drain + disconnect completed on the lines above.
+    if (wallclockTimedOut) {
+      process.exit(process.exitCode ?? 124);
+    }
   }
 }
 
