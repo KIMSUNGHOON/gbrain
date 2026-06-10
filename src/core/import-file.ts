@@ -1231,6 +1231,12 @@ export async function importCodeFile(
           from_symbol_qualified: from.symbol_name_qualified,
           to_symbol_qualified: e.toSymbol,
           edge_type: e.edgeType,
+          // Stamp the source: getCallersOf/getCalleesOf add
+          // `AND source_id = <scoped>` whenever a worktree pin / --source is
+          // in play, and a NULL here never matches that filter — so every
+          // scoped call-graph query silently returned 0 rows on
+          // multi-source brains even though the edges existed.
+          source_id: sourceId ?? null,
         });
       }
 
