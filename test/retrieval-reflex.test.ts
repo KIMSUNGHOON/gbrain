@@ -289,3 +289,47 @@ describe('v0.43 (#2095) — rolling window extraction through assemble()', () =>
     });
   });
 });
+
+describe('ambient-channel event logging (codex D11 — logChannel: reflex)', () => {
+  test('resolver with logChannel logs channel=reflex events through the drained sink', async () => {
+    const { awaitPendingVolunteerEventWrites, _resetPendingVolunteerEventWritesForTests } =
+      await import('../src/core/context/volunteer-events.ts');
+    _resetPendingVolunteerEventWritesForTests();
+    await engine.executeRaw('DELETE FROM context_volunteer_events').catch(() => {});
+    await seed('people/alice-example', 'Alice Example', 'A founder.');
+
+    const block = await resolveEntitiesToPointers(
+      engine,
+      'default',
+      extractCandidates('what do you think about Alice Example?'),
+      { logChannel: 'reflex' },
+    );
+    expect(block).not.toBeNull();
+    const { unfinished } = await awaitPendingVolunteerEventWrites(5_000);
+    expect(unfinished).toBe(0);
+    const rows = await engine.executeRaw<{ channel: string; slug: string; match_arm: string }>(
+      'SELECT channel, slug, match_arm FROM context_volunteer_events',
+      [],
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].channel).toBe('reflex');
+    expect(rows[0].slug).toBe('people/alice-example');
+    expect(rows[0].match_arm).toBe('title');
+  });
+
+  test('no logChannel → no events (the volunteer layer logs its own)', async () => {
+    await engine.executeRaw('DELETE FROM context_volunteer_events').catch(() => {});
+    await seed('people/alice-example', 'Alice Example', 'A founder.');
+    const block = await resolveEntitiesToPointers(
+      engine,
+      'default',
+      extractCandidates('about Alice Example'),
+      {},
+    );
+    expect(block).not.toBeNull();
+    const { awaitPendingVolunteerEventWrites } = await import('../src/core/context/volunteer-events.ts');
+    await awaitPendingVolunteerEventWrites(5_000);
+    const rows = await engine.executeRaw<{ channel: string }>('SELECT channel FROM context_volunteer_events', []);
+    expect(rows.length).toBe(0);
+  });
+});

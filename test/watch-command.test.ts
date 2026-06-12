@@ -125,3 +125,31 @@ describe('gbrain watch (#2095)', () => {
     expect(out.join('')).toContain('people/alice-example');
   });
 });
+
+describe('gbrain watch — window + cap flags (ship coverage G4)', () => {
+  test('--window-turns 1: fires on the mention turn itself; the pronoun follow-up adds nothing', async () => {
+    await seed('people/alice-example', 'Alice Example', 'Alice is a founder.');
+    const out = await watchRun(
+      [
+        'assistant: Alice Example led one last year.',
+        'user: what did she invest in?',
+      ],
+      ['--window-turns', '1', '--json'],
+    );
+    // Watch volunteers per turn: the entity fires at turn 1 (its mention
+    // turn). With window=1 the follow-up turn extracts nothing, so exactly
+    // one row exists and it carries turn 1 attribution.
+    expect(out.length).toBe(1);
+    expect(JSON.parse(out[0]).turn).toBe(1);
+  });
+
+  test('--max-pages 1 caps a multi-entity turn to one volunteered page', async () => {
+    await seed('people/alice-example', 'Alice Example', 'Founder.');
+    await seed('people/bob-sample', 'Bob Sample', 'Engineer.');
+    const out = await watchRun(
+      ['user: intro Alice Example to Bob Sample'],
+      ['--max-pages', '1', '--json'],
+    );
+    expect(out.length).toBe(1);
+  });
+});
