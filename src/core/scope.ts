@@ -80,11 +80,12 @@ const IMPLIES: Record<Scope, ReadonlySet<Scope>> = {
 
 /**
  * Does the granted scope set include something that satisfies `required`?
- * - admin in granted → true for any required
+ * - admin in granted → true for {admin, sources_admin, users_admin, write, read}
+ *   (NOT the sibling capabilities below — admin does not imply them)
  * - write in granted → true for {write, read}
- * - sources_admin in granted → true for {sources_admin}
- * - users_admin in granted → true for {users_admin}
- * - read in granted → true for {read}
+ * - sources_admin / users_admin / read → satisfy only themselves
+ * - agent / verifier / shared_write → non-admin-implied siblings, each satisfies only
+ *   itself (a super-admin token must be explicitly granted them)
  *
  * Unknown scopes in `granted` are ignored (forward-compat — pre-allowlist
  * tokens with bogus scopes don't crash hasScope; they just don't satisfy).
