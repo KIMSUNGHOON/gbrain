@@ -10,16 +10,22 @@
  * or `bun run verify` will reject the change.
  */
 
-export type Scope = 'read' | 'write' | 'admin' | 'sources_admin' | 'users_admin' | 'agent';
+export type Scope =
+  | 'read' | 'write' | 'admin' | 'sources_admin' | 'users_admin' | 'agent'
+  | 'verifier' | 'shared_write';
 
 // MIRROR OF src/core/scope.ts ALLOWED_SCOPES_LIST — keep alphabetically sorted.
 // v0.38: 'agent' added for the submit_agent remote-MCP op (sibling to admin,
 // NOT implied — existing admin clients must re-register to opt in).
+// PR-1 / W1.3: 'verifier' (deposit-only) + 'shared_write' added — both non-admin-implied
+// siblings (same opt-in rule as 'agent').
 export const ALLOWED_SCOPES_LIST: ReadonlyArray<Scope> = [
   'admin',
   'agent',
   'read',
+  'shared_write',
   'sources_admin',
   'users_admin',
+  'verifier',
   'write',
 ];

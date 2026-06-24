@@ -55,6 +55,23 @@ describe('hasScope — sibling non-implication for *_admin scopes', () => {
     expect(hasScope(['users_admin'], 'write')).toBe(false);
     expect(hasScope(['users_admin'], 'read')).toBe(false);
   });
+  test('verifier (PR-1/W1.3) → verifier only; NOT implied by admin or write', () => {
+    expect(hasScope(['verifier'], 'verifier')).toBe(true);
+    expect(hasScope(['verifier'], 'write')).toBe(false);
+    expect(hasScope(['verifier'], 'read')).toBe(false);
+    expect(hasScope(['admin'], 'verifier')).toBe(false);   // non-admin-implied sibling
+    expect(hasScope(['write'], 'verifier')).toBe(false);
+  });
+  test('shared_write (PR-1/W1.3) → shared_write only; NOT implied by admin or write', () => {
+    expect(hasScope(['shared_write'], 'shared_write')).toBe(true);
+    expect(hasScope(['shared_write'], 'write')).toBe(false);
+    expect(hasScope(['shared_write'], 'read')).toBe(false);
+    // ★ the W1.3 security crux: admin does NOT grant shared_write, so the Gate-1
+    // predicate (W3.1) can require it independently — a raw admin/grandfather bearer
+    // cannot slip a shared write through.
+    expect(hasScope(['admin'], 'shared_write')).toBe(false);
+    expect(hasScope(['write'], 'shared_write')).toBe(false);
+  });
 });
 
 describe('hasScope — read scope', () => {
@@ -129,22 +146,26 @@ describe('F3 refresh-token subset semantics under hasScope', () => {
 // ---------------------------------------------------------------------------
 
 describe('ALLOWED_SCOPES — exact list pinned', () => {
-  test('contains the 6 canonical scopes (v0.38: agent added)', () => {
-    expect(ALLOWED_SCOPES.size).toBe(6);
+  test('contains the 8 canonical scopes (v0.38: agent; PR-1/W1.3: verifier + shared_write)', () => {
+    expect(ALLOWED_SCOPES.size).toBe(8);
     expect(ALLOWED_SCOPES.has('read')).toBe(true);
     expect(ALLOWED_SCOPES.has('write')).toBe(true);
     expect(ALLOWED_SCOPES.has('admin')).toBe(true);
     expect(ALLOWED_SCOPES.has('sources_admin')).toBe(true);
     expect(ALLOWED_SCOPES.has('users_admin')).toBe(true);
     expect(ALLOWED_SCOPES.has('agent')).toBe(true);
+    expect(ALLOWED_SCOPES.has('verifier')).toBe(true);
+    expect(ALLOWED_SCOPES.has('shared_write')).toBe(true);
   });
   test('list is sorted alphabetically (deterministic for wire/drift check)', () => {
     expect([...ALLOWED_SCOPES_LIST]).toEqual([
       'admin',
       'agent',
       'read',
+      'shared_write',
       'sources_admin',
       'users_admin',
+      'verifier',
       'write',
     ]);
   });

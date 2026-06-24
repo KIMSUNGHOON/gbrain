@@ -22,7 +22,9 @@
  * vs user-account-mgmt — neither implies the other).
  */
 
-export type Scope = 'read' | 'write' | 'admin' | 'sources_admin' | 'users_admin' | 'agent';
+export type Scope =
+  | 'read' | 'write' | 'admin' | 'sources_admin' | 'users_admin' | 'agent'
+  | 'verifier' | 'shared_write';
 
 export const ALLOWED_SCOPES: ReadonlySet<Scope> = new Set<Scope>([
   'read',
@@ -31,6 +33,8 @@ export const ALLOWED_SCOPES: ReadonlySet<Scope> = new Set<Scope>([
   'sources_admin',
   'users_admin',
   'agent',
+  'verifier',
+  'shared_write',
 ]);
 
 /**
@@ -41,8 +45,10 @@ export const ALLOWED_SCOPES_LIST: ReadonlyArray<Scope> = Object.freeze([
   'admin',
   'agent',
   'read',
+  'shared_write',
   'sources_admin',
   'users_admin',
+  'verifier',
   'write',
 ]);
 
@@ -63,6 +69,13 @@ const IMPLIES: Record<Scope, ReadonlySet<Scope>> = {
   users_admin: new Set(['users_admin']),
   read: new Set(['read']),
   agent: new Set(['agent']),
+  // PR-1 / W1.3: `verifier` (deposit-only) + `shared_write` are non-admin-implied
+  // siblings (like `agent`, v0.38 D13) — admin does NOT imply them and they imply only
+  // themselves. A super-admin token must be explicitly granted them. This is what lets
+  // the Gate-1 predicate (W3.1) require `shared_write` INDEPENDENTLY of admin, so a raw
+  // admin/grandfather bearer can't slip a shared write through.
+  verifier: new Set(['verifier']),
+  shared_write: new Set(['shared_write']),
 };
 
 /**
