@@ -27,8 +27,9 @@ import { operations, OperationError } from '../core/operations.ts';
 import type { OperationContext, AuthInfo } from '../core/operations.ts';
 import { GBrainOAuthProvider, validateTokenEndpointAuthMethod } from '../core/oauth-provider.ts';
 import type { SqlQuery } from '../core/oauth-provider.ts';
-import { hasScope, ALLOWED_SCOPES_LIST, normalizeScopesInput } from '../core/scope.ts';
+import { ALLOWED_SCOPES_LIST, normalizeScopesInput } from '../core/scope.ts';
 import { summarizeMcpParams, dispatchToolCall } from '../mcp/dispatch.ts';
+import { resolveVerifierVerdict } from '../core/verifier-honor.ts';
 import { paramDefToSchema } from '../mcp/tool-defs.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
@@ -1487,47 +1488,16 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'unknown_operation', message: `Unknown: ${name}` }) }], isError: true };
       }
 
-      // Scope enforcement (v0.28: hasScope replaces exact-string-match so
-      // admin tokens satisfy any scope, write satisfies read, and the new
-      // sources_admin / users_admin scopes resolve through the same
-      // hierarchy. Plain string includes() at this site would have made
-      // sources_admin tokens look like they couldn't even read.)
-      const requiredScope = op.scope || 'read';
-      if (!hasScope(authInfo.scopes, requiredScope)) {
-        // v0.28.10: persist scope-rejected attempts. Same operator-visibility
-        // motivation as the unknown-op path — and it makes the v0.26.3
-        // persistence regression test reliable across both rejection paths.
-        const latency = Date.now() - startTime;
-        try {
-          await executeRawJsonb(
-            engine,
-            `INSERT INTO mcp_request_log (token_name, agent_name, operation, latency_ms, status, error_message, params)
-             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
-            [authInfo.clientId, agentName, name, latency, 'error', `insufficient_scope: requires '${requiredScope}'`],
-            [null],
-          );
-        } catch { /* best effort */ }
-        broadcastEvent({
-          agent: agentName,
-          operation: name,
-          scopes: authInfo.scopes.join(','),
-          latency_ms: latency,
-          status: 'error',
-          error: { code: 'insufficient_scope', message: `requires '${requiredScope}'` },
-          timestamp: new Date().toISOString(),
-        });
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              error: 'insufficient_scope',
-              message: `Operation ${name} requires '${requiredScope}' scope`,
-              your_scopes: authInfo.scopes,
-            }),
-          }],
-          isError: true,
-        };
-      }
+      // PR-2 / W2.3: the per-op SCOPE GATE moved OUT of this HTTP-only site into
+      // the shared dispatcher (src/mcp/dispatch.ts), so it now fires identically on
+      // stdio + HTTP(OAuth) + remote-CLI — closing the stdio/CLI scope-bypass. The
+      // dispatcher resolves `hasScope(authInfo.scopes, op.scope)` (authInfo is threaded
+      // below via `auth: authInfo`) and returns the same
+      // `{ error: 'insufficient_scope', ... }` envelope on rejection. Operator
+      // visibility is preserved: the post-dispatch `toolResult.isError` branch below
+      // persists the rejection to mcp_request_log + broadcasts it, the same as any
+      // other op error. Do NOT re-add an inline pre-check here — one gate, one source
+      // of truth (matches the engine-parity / canonical-pricing single-source rule).
 
       // F8: redact request payload by default (declared keys only via the
       // op's `params` allow-list; values + attacker-controlled key names
@@ -1567,6 +1537,12 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       // verifyAccessToken. The env-fallback is gone.
       const tokenSourceId = authInfo.sourceId ?? 'default';
 
+      // PR-2 / W2.2: honor-time verifier resolution (parity with stdio). When the
+      // request carries a `verifier_receipt` claim, validate it (deposited PASS receipt,
+      // current HEAD config, identity-bound) and inject the verdict; otherwise undefined
+      // (fail-closed). Resolved here at the transport, threaded in via DispatchOpts.
+      const verifierVerdict = await resolveVerifierVerdict(engine, params as Record<string, unknown> | undefined);
+
       let toolResult: Awaited<ReturnType<typeof dispatchToolCall>>;
       try {
         toolResult = await dispatchToolCall(engine, name, params as Record<string, unknown> | undefined, {
@@ -1574,6 +1550,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
           takesHoldersAllowList: tokenAllowList,
           sourceId: tokenSourceId,
           metaHook: getBrainHotMemoryMeta,
+          verifierVerdict,
           // v0.31 follow-up fix: thread auth so the whoami op (and any
           // future scope-aware handlers) can introspect the caller. The
           // original D12/eE1 refactor moved dispatch into dispatchToolCall
@@ -1622,9 +1599,21 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         // for the audit log we re-extract a message string for the
         // mcp_request_log error_message column. Best-effort parse.
         let errMsg = 'unknown_error';
+        // PR-2 / W2.3: also recover the specific error CODE so scope rejections
+        // surfaced by the shared dispatch gate broadcast as 'insufficient_scope'
+        // (not the generic 'op_error') — preserving the telemetry fidelity the
+        // removed HTTP-only pre-check used to emit. Handler errors keep their own
+        // code too (e.g. 'permission_denied'). Envelope shapes seen here:
+        //   { error: 'insufficient_scope', message } (dispatch gate / unknown_tool)
+        //   { error: { code, message } }            (OperationError.toJSON)
+        let errCode = 'op_error';
         try {
           const parsed = JSON.parse(toolResult.content[0]?.text ?? '{}');
           errMsg = parsed.error?.message ?? parsed.message ?? errMsg;
+          const codeCandidate = typeof parsed.error === 'string'
+            ? parsed.error
+            : (parsed.error?.code ?? parsed.code);
+          if (typeof codeCandidate === 'string' && codeCandidate.length > 0) errCode = codeCandidate;
         } catch { /* ignore */ }
         try {
           await executeRawJsonb(
@@ -1642,7 +1631,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
           scopes: authInfo.scopes.join(','),
           latency_ms: latency,
           status: 'error',
-          error: { code: 'op_error', message: errMsg },
+          error: { code: errCode, message: errMsg },
           timestamp: new Date().toISOString(),
         });
         return toolResult;

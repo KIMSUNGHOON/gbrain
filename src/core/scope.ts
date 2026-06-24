@@ -38,6 +38,30 @@ export const ALLOWED_SCOPES: ReadonlySet<Scope> = new Set<Scope>([
 ]);
 
 /**
+ * PR-2 / W2.3: default scope set for an UNAUTHENTICATED remote caller — the local
+ * stdio MCP pipe (`gbrain serve`, no per-token OAuth). The stdio transport is a local
+ * pipe owned by the machine operator; it is marked `remote=true` only for filesystem
+ * auto-link safety, not because it is network-exposed. Historically stdio had NO scope
+ * gate at all (the gate was HTTP-only), so it could call any op. W2.3 moves the gate to
+ * the shared dispatcher; to stay non-breaking for stdio's established read/write/admin
+ * role this default mirrors stdio's prior reach.
+ *
+ * Crucially it does NOT include the non-admin-implied siblings `verifier` / `shared_write`,
+ * and `admin` does not imply them (see `IMPLIES` below). So even with this generous
+ * default, a stdio (or any broad-token) caller still CANNOT reach a `verifier`-scoped op
+ * (e.g. `deposit_verifier_receipt`) or a future `shared_write` op without an explicit
+ * grant it can never obtain over the unauthenticated pipe. That is precisely the bypass
+ * W2.3 closes: the gate now fires on stdio + HTTP + remote-CLI identically.
+ *
+ * Authenticated callers (OAuth) use their token's granted scopes instead of this default.
+ */
+export const DEFAULT_LOCAL_PIPE_SCOPES: ReadonlyArray<Scope> = Object.freeze([
+  'read',
+  'write',
+  'admin',
+]);
+
+/**
  * Sorted list (deterministic for OAuth metadata + drift-check output).
  * Use this when emitting `scopes_supported` over the wire.
  */

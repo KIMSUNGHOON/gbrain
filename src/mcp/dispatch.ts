@@ -10,6 +10,7 @@ import type { BrainEngine } from '../core/engine.ts';
 import { operations, OperationError } from '../core/operations.ts';
 import type { Operation, OperationContext, AuthInfo } from '../core/operations.ts';
 import { loadConfig } from '../core/config.ts';
+import { hasScope, DEFAULT_LOCAL_PIPE_SCOPES } from '../core/scope.ts';
 
 export interface ToolResult {
   content: { type: 'text'; text: string }[];
@@ -68,8 +69,22 @@ export interface DispatchOpts {
    * transports throws unknown_transport — the v0.31 D12 / eE1 refactor
    * silently dropped this field when the inlined OperationContext literal
    * was replaced by dispatchToolCall.
+   *
+   * As of PR-2 / W2.3 this field is ALSO the scope-gate input: the dispatcher
+   * enforces `hasScope(auth?.scopes ?? DEFAULT_LOCAL_PIPE_SCOPES, op.scope)` for
+   * every untrusted (`remote !== false`) caller, so a missing `auth` no longer
+   * means "ungated" — it means "default local-pipe scopes".
    */
   auth?: AuthInfo;
+  /**
+   * PR-2 / W2.1: the honor-time verifier verdict resolved by the transport
+   * (stdio / OAuth) for this call. The dispatcher copies it verbatim onto
+   * `OperationContext.verifierVerdict`. Undefined = no verifier claim OR
+   * honor-time validation failed (fail-closed); the dispatcher never derives
+   * or fabricates a verdict itself — resolution is the transport's job
+   * (`src/core/verifier-honor.ts`).
+   */
+  verifierVerdict?: OperationContext['verifierVerdict'];
 }
 
 /**
@@ -210,6 +225,9 @@ export function buildOperationContext(
     // this fallback covers code paths that historically passed undefined.
     sourceId: opts.sourceId ?? 'default',
     auth: opts.auth,
+    // PR-2 / W2.1: carry the transport-resolved honor-time verdict. Undefined when
+    // no verifier claim was presented or honor-time validation failed (fail-closed).
+    verifierVerdict: opts.verifierVerdict,
   };
 }
 
@@ -248,6 +266,46 @@ export async function dispatchToolCall(
   }
 
   const ctx = buildOperationContext(engine, safeParams, opts);
+
+  // PR-2 / W2.3 (SECURITY CRUX): transport-agnostic scope gate. This check used to
+  // live ONLY in serve-http.ts, so stdio MCP and any other dispatchToolCall caller
+  // could invoke a write/admin/verifier op with no scope enforcement at all. Moving
+  // it here — the single shared dispatch path for stdio + HTTP(OAuth) + legacy-HTTP —
+  // closes that bypass: the gate now fires identically on every untrusted transport,
+  // BEFORE op.handler runs.
+  //
+  // Trust boundary (preserved): trusted local CLI callers set `remote === false`
+  // (src/cli.ts → handleToolCall) and bypass scope enforcement — there the OS, not an
+  // OAuth scope, is the trust boundary. Anything not strictly `false` is untrusted and
+  // gated (fail-closed, mirrors the `ctx.remote !== false` convention used elsewhere).
+  //
+  // Scope resolution: authenticated callers (OAuth) use their token's granted scopes;
+  // an unauthenticated remote caller (the local stdio pipe) inherits
+  // DEFAULT_LOCAL_PIPE_SCOPES. That default is read/write/admin but NOT the
+  // non-admin-implied siblings `verifier` / `shared_write` (and admin does not imply
+  // them), so a stdio / broad-token caller still cannot reach those without an explicit
+  // grant it can never hold over an unauthenticated pipe.
+  if (ctx.remote !== false) {
+    const requiredScope = op.scope || 'read';
+    // `??` substitutes the local-pipe default ONLY when `auth` is ABSENT (the stdio
+    // pipe). A caller that DID authenticate but carries an empty scope array (`[]`,
+    // e.g. a token granted nothing) keeps `[]` and is denied every op — fail-closed,
+    // never silently upgraded to the default.
+    const grantedScopes = ctx.auth?.scopes ?? DEFAULT_LOCAL_PIPE_SCOPES;
+    if (!hasScope(grantedScopes, requiredScope)) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: 'insufficient_scope',
+            message: `Operation ${name} requires '${requiredScope}' scope`,
+            your_scopes: [...grantedScopes],
+          }, null, 2),
+        }],
+        isError: true,
+      };
+    }
+  }
 
   try {
     const result = await op.handler(ctx, safeParams);
