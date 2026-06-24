@@ -5244,6 +5244,33 @@ export const MIGRATIONS: Migration[] = [
     idempotent: true,
     sql: `UPDATE access_tokens SET revoked_at = now() WHERE revoked_at IS NULL;`,
   },
+  {
+    version: 118,
+    name: 'verifier_receipts_carrier',
+    // PR-1 / W1.1 (Stage 1 carrier substrate): the VerifierReceipt store. A receipt is
+    // the identity of a verification OUTPUT, content-addressed by the 4-tuple
+    // (config_sha, model_sha, target_sha, run_sha) — full-width sha256 per input. The
+    // UNIQUE constraint makes deposits idempotent + immutable: deposit_verifier_receipt
+    // (W1.4) uses ON CONFLICT DO NOTHING, so a FAIL receipt cannot be silently overwritten
+    // by a PASS for the same identity (replay-binding + tamper resistance). receipt_json
+    // carries the full blob for replay. Engine-agnostic DDL → both engines (shape mirrors
+    // eval_takes_quality_runs at v49). Data-shape only; no forward reference.
+    idempotent: true,
+    sql: `
+      CREATE TABLE IF NOT EXISTS verifier_receipts (
+        id            BIGSERIAL    PRIMARY KEY,
+        config_sha    TEXT         NOT NULL,
+        model_sha     TEXT         NOT NULL,
+        target_sha    TEXT         NOT NULL,
+        run_sha       TEXT         NOT NULL,
+        verdict       TEXT         NOT NULL CHECK (verdict IN ('pass','fail','inconclusive')),
+        cd_score      REAL,
+        receipt_json  JSONB        NOT NULL,
+        created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        UNIQUE (config_sha, model_sha, target_sha, run_sha)
+      );
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

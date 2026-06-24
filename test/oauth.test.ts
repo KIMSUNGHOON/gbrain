@@ -634,13 +634,14 @@ describe('operation scope annotations', () => {
       expect(op.scope, `${op.name} missing scope`).toBeDefined();
       // v0.28 added sources_admin and users_admin to the union.
       // v0.38 added 'agent' for submit_agent (D13).
+      // PR-1/W1.3 added 'verifier' (deposit_verifier_receipt) + 'shared_write' (Gate-1, W3.1).
       expect([
-        'read', 'write', 'admin', 'sources_admin', 'users_admin', 'agent',
+        'read', 'write', 'admin', 'sources_admin', 'users_admin', 'agent', 'verifier', 'shared_write',
       ]).toContain(op.scope);
     }
   });
 
-  test('mutating operations are write/admin/sources_admin/users_admin/agent scoped', () => {
+  test('mutating operations are write/admin/sources_admin/users_admin/agent/verifier scoped', () => {
     const { operations } = require('../src/core/operations.ts');
     for (const op of operations) {
       if (op.mutating) {
@@ -648,8 +649,10 @@ describe('operation scope annotations', () => {
         // sources, not pages); read scope is the only thing too narrow for
         // any mutating op. v0.38: 'agent' is a mutating-axis scope for
         // submit_agent (creates jobs, spends money, but contained by bindings).
+        // PR-1/W1.4: 'verifier' is the mutating-axis scope for deposit_verifier_receipt
+        // (writes an immutable receipt row, gated by the deposit-only capability).
         expect(
-          ['write', 'admin', 'sources_admin', 'users_admin', 'agent'],
+          ['write', 'admin', 'sources_admin', 'users_admin', 'agent', 'verifier'],
           `${op.name} is mutating but not a write-axis scope`,
         ).toContain(op.scope);
       }

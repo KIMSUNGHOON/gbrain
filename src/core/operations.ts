@@ -28,6 +28,9 @@ import type { SearchResult } from './types.ts';
 import { CJK_SLUG_CHARS } from './cjk.ts';
 import * as db from './db.ts';
 import { VERSION } from '../version.ts';
+import { type Scope } from './scope.ts';
+import { executeRawJsonb } from './sql-query.ts';
+import { buildContentAddress, type VerifierReceiptIdentity } from './verifier-receipt.ts';
 import {
   GET_RECENT_SALIENCE_DESCRIPTION,
   FIND_ANOMALIES_DESCRIPTION,
@@ -579,7 +582,7 @@ export interface Operation {
    * Local CLI callers (ctx.remote === false) bypass scope enforcement
    * because the trust boundary there is the OS, not OAuth scopes.
    */
-  scope?: 'read' | 'write' | 'admin' | 'sources_admin' | 'users_admin';
+  scope?: Scope;  // single source of truth = src/core/scope.ts (incl. agent/verifier/shared_write siblings)
   localOnly?: boolean;
   cliHints?: {
     name?: string;
@@ -4806,7 +4809,60 @@ const run_skillopt: Operation = {
   },
 };
 
+// --- Verifier receipt carrier (PR-1 / W1.4) ---
+
+const deposit_verifier_receipt: Operation = {
+  name: 'deposit_verifier_receipt',
+  description: 'Deposit a VerifierReceipt — the immutable, content-addressed identity of a verification output (config/model/target/run shas + verdict + cd_score + the full receipt blob). Idempotent: ON CONFLICT (config_sha, model_sha, target_sha, run_sha) DO NOTHING, so a FAIL receipt cannot be silently overwritten by a PASS for the same identity (replay-binding + tamper resistance). Returns the content-address and whether this call inserted a new row.',
+  params: {
+    config_sha: { type: 'string', required: true, description: 'Full-width sha256 of the verifier config.' },
+    model_sha: { type: 'string', required: true, description: 'Full-width sha256 of the model identity.' },
+    target_sha: { type: 'string', required: true, description: 'Full-width sha256 of the target under verification.' },
+    run_sha: { type: 'string', required: true, description: 'Full-width sha256 of the verification run.' },
+    verdict: { type: 'string', required: true, enum: ['pass', 'fail', 'inconclusive'], description: 'The verification verdict.' },
+    cd_score: { type: 'number', description: 'Composite verifier score (optional; may be absent for fail/inconclusive).' },
+    receipt_json: { type: 'object', required: true, description: 'The full receipt blob, stored raw in JSONB for replay.' },
+  },
+  scope: 'verifier',
+  mutating: true,
+  handler: async (ctx, p) => {
+    const id: VerifierReceiptIdentity = {
+      config_sha: p.config_sha as string,
+      model_sha: p.model_sha as string,
+      target_sha: p.target_sha as string,
+      run_sha: p.run_sha as string,
+    };
+    const verdict = p.verdict as string;
+    if (!['pass', 'fail', 'inconclusive'].includes(verdict)) {
+      throw new OperationError('invalid_verdict', `verdict must be pass|fail|inconclusive, got: ${verdict}`);
+    }
+    const cd_score = (p.cd_score === undefined || p.cd_score === null) ? null : Number(p.cd_score);
+    const receipt_json = (p.receipt_json ?? {}) as Record<string, unknown>;
+    // ON CONFLICT DO NOTHING makes the deposit idempotent + immutable; RETURNING id is
+    // empty on conflict, so `inserted` distinguishes a fresh deposit from a re-deposit of
+    // the same identity. JSONB goes through executeRawJsonb (raw object, $7::jsonb cast) to
+    // avoid the postgres.js double-encode footgun.
+    const rows = await executeRawJsonb<{ id: string }>(
+      ctx.engine,
+      `INSERT INTO verifier_receipts (config_sha, model_sha, target_sha, run_sha, verdict, cd_score, receipt_json)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+       ON CONFLICT (config_sha, model_sha, target_sha, run_sha) DO NOTHING
+       RETURNING id`,
+      [id.config_sha, id.model_sha, id.target_sha, id.run_sha, verdict, cd_score],
+      [receipt_json],
+    );
+    return {
+      content_address: buildContentAddress(id),
+      verdict,
+      inserted: rows.length === 1, // false ⇒ an immutable receipt for this identity already existed
+    };
+  },
+  cliHints: { name: 'deposit-receipt', hidden: true },
+};
+
 export const operations: Operation[] = [
+  // Verifier receipt carrier (PR-1 / Stage 1)
+  deposit_verifier_receipt,
   // Page CRUD
   get_page, put_page, delete_page, list_pages,
   // v0.26.5 destructive-guard ops (page-level soft-delete + recovery + admin purge)
