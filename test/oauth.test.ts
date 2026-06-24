@@ -12,7 +12,6 @@ import {
 import { hashToken, generateToken } from '../src/core/utils.ts';
 import { PGLITE_SCHEMA_SQL } from '../src/core/pglite-schema.ts';
 import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
-import type { AuthInfo as CoreAuthInfo } from '../src/core/operations.ts';
 
 // ---------------------------------------------------------------------------
 // Test setup: in-memory PGLite with OAuth tables
@@ -298,8 +297,10 @@ describe('verifyAccessToken', () => {
     expect(authInfo.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
   });
 
-  test('legacy access_tokens fallback works', async () => {
-    // Insert a legacy bearer token
+  test('legacy access_tokens are REJECTED — grandfather fallback removed (PR-0/W0.1)', async () => {
+    // Pre-OAuth legacy bearer tokens used to be grandfathered into full
+    // ['read','write','admin'] access via the access_tokens fallback. PR-0/W0.1
+    // removed that path; an unrecognized (legacy) token is now always rejected.
     const legacyToken = generateToken('gbrain_');
     const hash = hashToken(legacyToken);
     await sql`
@@ -307,15 +308,10 @@ describe('verifyAccessToken', () => {
       VALUES (${crypto.randomUUID()}, ${'legacy-agent'}, ${hash})
     `;
 
-    const authInfo = await provider.verifyAccessToken(legacyToken);
-    expect(authInfo.clientId).toBe('legacy-agent');
-    expect(authInfo.scopes).toEqual(['read', 'write', 'admin']); // grandfathered full access
+    await expect(provider.verifyAccessToken(legacyToken)).rejects.toThrow('Invalid token');
   });
 
-  test('legacy access_tokens fallback honors permissions.source_id array grants', async () => {
-    // oauth.test.ts initializes the static PGLite schema blob, not the full
-    // migration stack. Add the v38 permissions column here so the row matches
-    // a modern brain carrying a legacy-token source grant.
+  test('legacy access_tokens are rejected even WITH a permissions.source_id grant (no legacy bypass)', async () => {
     await sql`
       ALTER TABLE access_tokens
         ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{"takes_holders":["world"]}'::jsonb
@@ -333,10 +329,9 @@ describe('verifyAccessToken', () => {
       )
     `;
 
-    const authInfo = await provider.verifyAccessToken(legacyToken) as CoreAuthInfo;
-    expect(authInfo.clientId).toBe('legacy-federated-agent');
-    expect(authInfo.sourceId).toBe('default');
-    expect(authInfo.allowedSources).toEqual(['default', 'src-a', 'src-b']);
+    // The stored source grant is now moot — the grandfather path is gone, so the
+    // token is rejected regardless of any permissions row it carries.
+    await expect(provider.verifyAccessToken(legacyToken)).rejects.toThrow('Invalid token');
   });
 });
 

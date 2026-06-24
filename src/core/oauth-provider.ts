@@ -26,7 +26,6 @@ import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.
 import { hashToken, generateToken, isUndefinedColumnError } from './utils.ts';
 import { hasScope, assertAllowedScopes, parseScopeString, InvalidScopeError } from './scope.ts';
 import type { AuthInfo as CoreAuthInfo } from './operations.ts';
-import { parseLegacyTokenScope } from './legacy-token-scope.ts';
 import type { SqlQuery, SqlValue } from './sql-query.ts';
 export type { SqlQuery, SqlValue };
 
@@ -642,62 +641,11 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       } as CoreAuthInfo as SdkAuthInfo;
     }
 
-    // Fallback: legacy access_tokens table (backward compat). Modern legacy
-    // rows may carry permissions.source_id from the pre-OAuth bearer-token
-    // path; OAuth transport must preserve that same source grant instead of
-    // pinning every legacy token to `default`.
-    let legacyRows: Record<string, unknown>[];
-    try {
-      legacyRows = await this.sql`
-        SELECT name, permissions FROM access_tokens
-        WHERE token_hash = ${tokenHash} AND revoked_at IS NULL
-      `;
-    } catch (err) {
-      if (isUndefinedColumnError(err, 'permissions')) {
-        legacyRows = await this.sql`
-          SELECT name FROM access_tokens
-          WHERE token_hash = ${tokenHash} AND revoked_at IS NULL
-        `;
-      } else {
-        throw err;
-      }
-    }
-
-    if (legacyRows.length > 0) {
-      // Legacy tokens get full admin access (grandfather in).
-      // For legacy tokens, name = clientId = clientName (single identifier).
-      // Update last_used_at
-      await this.sql`
-        UPDATE access_tokens SET last_used_at = now() WHERE token_hash = ${tokenHash}
-      `;
-      const name = legacyRows[0].name as string;
-      const permissionsRaw = legacyRows[0].permissions;
-      let permissions: unknown = permissionsRaw;
-      if (typeof permissionsRaw === 'string') {
-        try {
-          permissions = JSON.parse(permissionsRaw);
-        } catch {
-          permissions = undefined;
-        }
-      }
-      const sourceGrant = permissions && typeof permissions === 'object'
-        ? (permissions as Record<string, unknown>).source_id
-        : undefined;
-      const { sourceId, allowedSources } = parseLegacyTokenScope(sourceGrant);
-      return {
-        token,
-        clientId: name,
-        clientName: name,
-        scopes: ['read', 'write', 'admin'],
-        expiresAt: Math.floor(Date.now() / 1000) + 365 * 24 * 3600, // Legacy tokens never expire — set 1yr future
-        // Legacy tokens without an explicit permissions.source_id grant keep
-        // the historical 'default' source floor. Array grants become
-        // allowedSources for federated reads, matching legacy HTTP transport.
-        sourceId,
-        allowedSources,
-      } as CoreAuthInfo as SdkAuthInfo;
-    }
-
+    // PR-0 / W0.1 (do-first, gating): the legacy access_tokens grandfather
+    // fallback — which granted pre-OAuth bearer tokens full ['read','write',
+    // 'admin'] scope with a 1-year expiry — is REMOVED. Legacy tokens are
+    // blanket-revoked by migration v117 and are no longer honored on any
+    // transport; an unrecognized token is now always rejected here.
     throw new InvalidTokenError('Invalid token');
   }
 

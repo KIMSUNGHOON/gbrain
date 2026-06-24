@@ -2179,3 +2179,43 @@ describe('v112 — pages_links_extracted_at', () => {
   });
 });
 
+describe('v117 — revoke_all_legacy_access_tokens (PR-0 / W0.1 legacy-token disable)', () => {
+  const v117 = MIGRATIONS.find(m => m.version === 117);
+
+  test('v117 exists, is data-only + idempotent, and blanket-revokes legacy access_tokens', () => {
+    expect(v117).toBeDefined();
+    expect(v117!.name).toBe('revoke_all_legacy_access_tokens');
+    expect(v117!.idempotent).toBe(true);
+    const sql = v117!.sql;
+    expect(sql).toContain('UPDATE access_tokens');
+    expect(sql).toContain('SET revoked_at = now()');
+    expect(sql).toContain('WHERE revoked_at IS NULL');
+    // Data-only: no schema change, so no schema-drift / bootstrap-coverage impact.
+    expect(sql).not.toMatch(/ADD COLUMN|CREATE TABLE|CREATE INDEX/i);
+  });
+
+  test('behavioral (PGLite): a live legacy token is revoked → 0 rows left with revoked_at IS NULL', async () => {
+    const engine = new PGLiteEngine();
+    await engine.connect({});
+    try {
+      await engine.initSchema(); // applies all migrations incl v117 (access_tokens starts empty)
+      // Seed a legacy bearer row as if it pre-existed the migration (revoked_at defaults NULL).
+      await engine.executeRaw(
+        `INSERT INTO access_tokens (id, name, token_hash) VALUES ('${crypto.randomUUID()}', 'legacy-agent', 'pr0-legacy-hash')`, [],
+      );
+      const before = await engine.executeRaw<{ n: number }>(
+        `SELECT count(*)::int AS n FROM access_tokens WHERE revoked_at IS NULL`, [],
+      );
+      expect(before[0].n).toBeGreaterThanOrEqual(1);
+      // Apply the v117 revoke (idempotent; mirrors the migration running on pre-existing data).
+      await engine.executeRaw(v117!.sql, []);
+      const after = await engine.executeRaw<{ n: number }>(
+        `SELECT count(*)::int AS n FROM access_tokens WHERE revoked_at IS NULL`, [],
+      );
+      expect(after[0].n).toBe(0); // PR-0 acceptance: no live legacy tokens remain
+    } finally {
+      await engine.disconnect();
+    }
+  }, 30000);
+});
+

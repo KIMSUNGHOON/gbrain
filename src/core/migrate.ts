@@ -5232,6 +5232,18 @@ export const MIGRATIONS: Migration[] = [
         ON code_edges_chunk (from_symbol_qualified);
     `,
   },
+  {
+    version: 117,
+    name: 'revoke_all_legacy_access_tokens',
+    // PR-0 / W0.1 (do-first, gating): disable the pre-OAuth legacy bearer-token
+    // grandfather path. Both surviving legacy-token reads — oauth-provider.ts's
+    // fallback and http-transport.ts's validateToken — gate on `revoked_at IS NULL`,
+    // so blanket-revoking every access_tokens row denies legacy bearers on both
+    // transports. Idempotent: the WHERE clause no-ops already-revoked rows, so
+    // re-runs are safe (the column already exists; this is data-only, no schema change).
+    idempotent: true,
+    sql: `UPDATE access_tokens SET revoked_at = now() WHERE revoked_at IS NULL;`,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0
