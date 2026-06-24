@@ -30,7 +30,7 @@ import * as db from './db.ts';
 import { VERSION } from '../version.ts';
 import { type Scope } from './scope.ts';
 import { executeRawJsonb } from './sql-query.ts';
-import { buildContentAddress, type VerifierReceiptIdentity } from './verifier-receipt.ts';
+import { buildContentAddress, type VerifierReceiptIdentity, type VerifierVerdict } from './verifier-receipt.ts';
 import {
   GET_RECENT_SALIENCE_DESCRIPTION,
   FIND_ANOMALIES_DESCRIPTION,
@@ -288,6 +288,23 @@ export interface OperationContext {
    * per-operation scope enforcement.
    */
   auth?: AuthInfo;
+  /**
+   * PR-2 / W2.1 (Stage 2 carrier plumbing): the honor-time verifier verdict for THIS
+   * tool call. Populated by the transport (stdio / OAuth) when the request carried a
+   * `verifier_receipt` claim that resolved to a deposited PASS receipt whose
+   * content-address binds to the CURRENT verifier config (`config_sha === HEAD`) and
+   * the write's identity (`model/target/run`). See `src/core/verifier-honor.ts`.
+   *
+   * Undefined when no claim was presented OR honor-time validation failed (fail-closed):
+   * a FAIL / inconclusive / stale-config / field-mismatch / absent receipt all collapse
+   * to `undefined`, so a consuming Gate (Stage 3 / W3.1) treats "no verdict" identically
+   * to "verification did not pass". The carrier NEVER fabricates a pass.
+   *
+   * `verdict` is the receipt's verdict (only `'pass'` is ever injected today; the type
+   * stays the full `VerifierVerdict` for forward-compat). `contentAddress` is the
+   * full-width sha256 content-address of the honored receipt (audit/binding handle).
+   */
+  verifierVerdict?: { verdict: VerifierVerdict; contentAddress: string };
   /**
    * True when the caller is remote/untrusted (MCP over stdio/HTTP, or any agent-facing entry point).
    * False for local CLI invocations by the owner of the machine.

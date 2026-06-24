@@ -6,6 +6,7 @@ import { operations } from '../core/operations.ts';
 import { VERSION } from '../version.ts';
 import { buildToolDefs } from './tool-defs.ts';
 import { dispatchToolCall, validateParams, buildOperationContext } from './dispatch.ts';
+import { resolveVerifierVerdict } from '../core/verifier-honor.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
 import {
@@ -35,6 +36,11 @@ export async function startMcpServer(engine: BrainEngine) {
   // shape and cast through `any` (the SDK accepts it via the ServerResult union).
   server.setRequestHandler(CallToolRequestSchema, async (request: any): Promise<any> => {
     const { name, arguments: params } = request.params;
+    // PR-2 / W2.2: honor-time verifier resolution. If the request carried a
+    // `verifier_receipt` claim, validate it (deposited PASS receipt, current HEAD
+    // config, identity-bound) and inject the verdict; otherwise undefined (fail-closed).
+    // Runs BEFORE dispatch so the dispatcher can copy it onto ctx.verifierVerdict.
+    const verifierVerdict = await resolveVerifierVerdict(engine, params);
     // v0.28: stdio MCP has no per-token auth (local pipe). Default the
     // takes-holder allow-list to ['world'] so agent-facing callers don't
     // see private hunches via takes_list / takes_search / query. Operators
@@ -51,6 +57,7 @@ export async function startMcpServer(engine: BrainEngine) {
       // Code see the brain's relevant hot memory automatically alongside
       // every tool-call response. Best-effort; absorbs errors.
       metaHook: getBrainHotMemoryMeta,
+      verifierVerdict,
     });
   });
 
