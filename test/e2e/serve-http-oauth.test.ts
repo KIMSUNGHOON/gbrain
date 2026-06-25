@@ -52,8 +52,12 @@ describeE2E('serve-http OAuth 2.1 E2E (v0.26.1 + v0.26.2 + v0.26.3)', () => {
     // Other tests that mint specific subsets ('read', 'read write') still
     // get the subset they ask for — adding admin to the client's allowed
     // ceiling does not auto-grant it to every minted token.
+    // v0.42.50.0 (S4): + shared_write in the ceiling so the OAuth world-write
+    // gate test can mint a shared_write token and prove the deny comes from the
+    // MISSING verifier verdict (not missing shared_write). Adding it to the
+    // client ceiling does NOT auto-grant it to tokens that don't request it.
     const regOutput = execSync(
-      'bun run src/cli.ts auth register-client e2e-oauth-test --grant-types client_credentials --scopes "read write admin"',
+      'bun run src/cli.ts auth register-client e2e-oauth-test --grant-types client_credentials --scopes "read write admin shared_write"',
       { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env } }
     );
     const idMatch = regOutput.match(/Client ID:\s+(gbrain_cl_\S+)/);
@@ -176,6 +180,50 @@ describeE2E('serve-http OAuth 2.1 E2E (v0.26.1 + v0.26.2 + v0.26.3)', () => {
     // Should contain search results, not an auth error
     expect(body).not.toContain('invalid_token');
     expect(body).toContain('result');
+  }, 15_000);
+
+  // =========================================================================
+  // S4 (v0.42.50.0) — verifier promotion gate fires on the REAL OAuth-HTTP
+  // transport (not just the unit dispatch tests). A remote world-write without
+  // a server-injected verifier PASS verdict is denied with zero side-effect.
+  // =========================================================================
+
+  test('★ S4 — OAuth world-write WITH shared_write but NO verdict → permission_denied', async () => {
+    // shared_write granted, so the deny is provably from the missing verifier
+    // verdict (the server injects none for a plain OAuth call) — the empirical
+    // 3rd-transport proof of the Gate-1 promotion predicate.
+    const { access_token } = await mintToken('read write shared_write');
+    const res = await mcpCall(access_token, 'tools/call', {
+      name: 'extract_facts',
+      arguments: { turn_text: 'fund-a led the seed round.', visibility: 'world' },
+    });
+    expect(res.status).not.toBe(401);
+    const body = await res.text();
+    expect(body).toContain('permission_denied');
+  }, 15_000);
+
+  test('S4 — OAuth world-write WITHOUT shared_write → permission_denied', async () => {
+    const { access_token } = await mintToken('read write');
+    const res = await mcpCall(access_token, 'tools/call', {
+      name: 'extract_facts',
+      arguments: { turn_text: 'fund-b led the seed round.', visibility: 'world' },
+    });
+    expect(res.status).not.toBe(401);
+    const body = await res.text();
+    expect(body).toContain('permission_denied');
+  }, 15_000);
+
+  test('S4 control — the SAME op as a private write is NOT gate-denied (promotion-only)', async () => {
+    // Proves the deny above is the promotion gate, not a blanket extract_facts
+    // refusal: a private (default) write passes the gate (may fail later on the
+    // missing LLM gateway, but never with permission_denied).
+    const { access_token } = await mintToken('read write shared_write');
+    const res = await mcpCall(access_token, 'tools/call', {
+      name: 'extract_facts',
+      arguments: { turn_text: 'a private note.' },
+    });
+    const body = await res.text();
+    expect(body).not.toContain('permission_denied');
   }, 15_000);
 
   test('expired/invalid token is rejected at /mcp', async () => {

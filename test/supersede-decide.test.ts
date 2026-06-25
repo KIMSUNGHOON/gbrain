@@ -67,6 +67,24 @@ describe('decideSupersede — conservative independents', () => {
     expect(decideSupersede(input({ valid_from: OLD }), [cand({ valid_from: NEW })], THETA))
       .toEqual({ decision: 'independent' });
   });
+
+  // S5 (v0.42.50.0) — embedder-down fail-closed at the DECIDER. A destructive
+  // supersede must never fire on a fact whose embedding couldn't be computed
+  // (embedder unreachable). This is the unit complement to the structural pin in
+  // embedder-down-fail-modes.test.ts (runPipelineWithBody also guards on
+  // f.embedding before reaching the decider). (A full pipeline behavioral test
+  // is not a meaningful surface: turn-extracted facts carry no valid_from, so
+  // the decider returns independent there regardless of the embedder — see the
+  // null-valid_from case below.)
+  test('input with NULL embedding ⇒ independent (embedder-down fact cannot supersede)', () => {
+    expect(decideSupersede(input({ embedding: null }), [cand()], THETA)).toEqual({ decision: 'independent' });
+  });
+  test('candidate with NULL embedding is skipped ⇒ independent', () => {
+    expect(decideSupersede(input(), [cand({ embedding: null })], THETA)).toEqual({ decision: 'independent' });
+  });
+  test('input with null valid_from ⇒ independent (no comparable recency)', () => {
+    expect(decideSupersede(input({ valid_from: null }), [cand()], THETA)).toEqual({ decision: 'independent' });
+  });
   test('different entity ⇒ independent', () => {
     expect(decideSupersede(input({ entity_slug: 'widgetco' }), [cand({ entity_slug: 'acme' })], THETA))
       .toEqual({ decision: 'independent' });
