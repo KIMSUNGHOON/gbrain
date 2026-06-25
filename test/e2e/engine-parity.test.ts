@@ -263,6 +263,48 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     expect(pglitePage!.ingested_at).toBeInstanceOf(Date);
   });
 
+  // PR-7 / W7.3 — supersede executor parity. The Stage-4 Gate-2 supersede write
+  // must behave identically on both engines. Tested at the `engine.insertFact`
+  // layer with an EXPLICIT supersedeId, so it is theta-INDEPENDENT and therefore
+  // NOT vacuous under the default `facts.supersede_theta = null` (which would
+  // leave supersedeId unset and make `superseded` trivially 0 on both engines —
+  // the trap the map flagged). Both engines must: return status 'superseded',
+  // leave the new row active (expired_at NULL), and expire the prior row
+  // (expired_at NOT NULL, superseded_by = newId). engine-parity had ZERO
+  // insertFact/supersede tests before this.
+  test('supersede executor: identical row-state transition on both engines (insertFact {supersedeId})', async () => {
+    async function observe(engine: BrainEngine) {
+      const base = await engine.insertFact({ fact: 'Parity MRR is 50k.', source: 'cli:parity' }, { source_id: 'default' });
+      const neu = await engine.insertFact(
+        { fact: 'Parity MRR is 60k.', source: 'cli:parity' },
+        { source_id: 'default', supersedeId: base.id },
+      );
+      const rows = await engine.executeRaw<{ id: number; expired_at: unknown; superseded_by: number | null }>(
+        'SELECT id, expired_at, superseded_by FROM facts WHERE id = $1 OR id = $2', [base.id, neu.id],
+      );
+      const oldRow = rows.find(r => Number(r.id) === Number(base.id))!;
+      const newRow = rows.find(r => Number(r.id) === Number(neu.id))!;
+      return {
+        status: neu.status,
+        oldExpired: oldRow.expired_at != null,
+        oldPointsAtNew: Number(oldRow.superseded_by) === Number(neu.id),
+        newActive: newRow.expired_at == null,
+      };
+    }
+    const pg = await observe(pgEngine);
+    const pglite = await observe(pgliteEngine);
+
+    // Each engine's transition is individually correct...
+    for (const o of [pg, pglite]) {
+      expect(o.status).toBe('superseded');
+      expect(o.oldExpired).toBe(true);
+      expect(o.oldPointsAtNew).toBe(true);
+      expect(o.newActive).toBe(true);
+    }
+    // ...and structurally identical across engines (the parity claim).
+    expect(pg).toEqual(pglite);
+  });
+
   test('provenance COALESCE-preserve UPDATE: parity on both engines (CV12)', async () => {
     // First write with provenance.
     const slug = 'wiki/provenance-preserve-parity';
