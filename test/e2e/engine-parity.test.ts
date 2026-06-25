@@ -305,6 +305,34 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     expect(pg).toEqual(pglite);
   });
 
+  // PR-5 fast-follow — the row_num-aware fence reconcile (insertFacts ON CONFLICT
+  // upsert on idx_facts_fence_key, COALESCE-preserve verified_by) is new engine
+  // SQL with a partial-index conflict target + EXCLUDED references — it MUST behave
+  // identically on real Postgres and PGLite, not just compile.
+  test('fence reconcile UPSERTs onto a surviving verified row — identical on both engines', async () => {
+    const RECEIPT = 'a'.repeat(64);
+    async function observe(engine: BrainEngine) {
+      const slug = 'wiki/fence-upsert-parity';
+      await engine.insertFacts([{ fact: 'Verified v1.', source: 'gate', verified_by: RECEIPT, source_markdown_slug: slug, row_num: 3 }], { source_id: 'default' });
+      await engine.deleteFactsForPage(slug, 'default'); // verified row survives at row 3 (W5.3 carve-out)
+      // Re-extraction lands a fence row at the SAME slot — pre-fix this collided
+      // on idx_facts_fence_key and threw; now it UPSERTs.
+      await engine.insertFacts([{ fact: 'Refreshed v2.', source: 'fence', source_markdown_slug: slug, row_num: 3 }], { source_id: 'default' });
+      const rows = await engine.executeRaw<{ fact: string; verified_by: string | null }>(
+        'SELECT fact, verified_by FROM facts WHERE source_markdown_slug = $1 AND row_num = 3', [slug],
+      );
+      return { count: rows.length, fact: rows[0]?.fact ?? null, verified_by: rows[0]?.verified_by ?? null };
+    }
+    const pg = await observe(pgEngine);
+    const pglite = await observe(pgliteEngine);
+    for (const o of [pg, pglite]) {
+      expect(o.count).toBe(1);                 // no duplicate, no throw
+      expect(o.fact).toBe('Refreshed v2.');    // fence content refreshed
+      expect(o.verified_by).toBe(RECEIPT);     // verified_by preserved
+    }
+    expect(pg).toEqual(pglite);
+  });
+
   test('provenance COALESCE-preserve UPDATE: parity on both engines (CV12)', async () => {
     // First write with provenance.
     const slug = 'wiki/provenance-preserve-parity';

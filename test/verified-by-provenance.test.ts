@@ -107,11 +107,17 @@ describe('W5.3 — verified facts survive deleteFactsForPage (re-sync survival)'
   });
 });
 
-describe('W5.3 — re-insert interaction with a surviving verified row (latent; inert by default)', () => {
+describe('PR-5 fast-follow — row_num-aware fence reconcile UPSERTs onto a surviving verified row', () => {
   async function exists2(id: number): Promise<boolean> {
     const rows = await engine.executeRaw<{ id: number }>('SELECT id FROM facts WHERE id = $1', [id]);
     return rows.length > 0;
   }
+  async function readSlot(slug: string, rowNum: number) {
+    return engine.executeRaw<{ id: number; fact: string; verified_by: string | null }>(
+      'SELECT id, fact, verified_by FROM facts WHERE source_markdown_slug = $1 AND row_num = $2', [slug, rowNum],
+    );
+  }
+
   test('a re-extract at a fresh row_num coexists with the surviving verified row', async () => {
     const a = await engine.insertFacts([{ fact: 'Verified at row 1.', source: 'mcp:extract_facts', verified_by: RECEIPT, source_markdown_slug: 'wiki/coexist', row_num: 1 }], { source_id: 'default' });
     await engine.deleteFactsForPage('wiki/coexist', 'default');                 // verified survives
@@ -120,11 +126,26 @@ describe('W5.3 — re-insert interaction with a surviving verified row (latent; 
     expect(await exists2(a.ids[0])).toBe(true);  // verified row still there
     expect(await exists2(b.ids[0])).toBe(true);  // new row inserted
   });
-  test('re-insert at the SAME row_num as a surviving verified row collides (idx_facts_fence_key) — known latent, contained in the cycle reconcile (extract-facts.ts try/catch)', async () => {
+
+  test('re-insert at the SAME row_num as a surviving verified row UPSERTs — no collision, content refreshed, verified_by preserved', async () => {
     await engine.insertFacts([{ fact: 'Verified at row 5.', source: 'mcp:extract_facts', verified_by: RECEIPT, source_markdown_slug: 'wiki/collide', row_num: 5 }], { source_id: 'default' });
     await engine.deleteFactsForPage('wiki/collide', 'default');                 // verified survives at row 5
-    await expect(
-      engine.insertFacts([{ fact: 'Collision at row 5.', source: 'mcp:extract_facts', source_markdown_slug: 'wiki/collide', row_num: 5 }], { source_id: 'default' }),
-    ).rejects.toThrow();  // pins the latent collision; the cycle path contains it, the fast-follow makes the reconcile row_num-aware
+    // Old behavior: this threw on idx_facts_fence_key. Now the fence reconcile
+    // UPSERTs the surviving slot instead of colliding.
+    await engine.insertFacts([{ fact: 'Refreshed at row 5.', source: 'mcp:extract_facts', source_markdown_slug: 'wiki/collide', row_num: 5 }], { source_id: 'default' });
+    const rows = await readSlot('wiki/collide', 5);
+    expect(rows.length).toBe(1);                       // exactly one row at the slot (no duplicate)
+    expect(rows[0].fact).toBe('Refreshed at row 5.');  // fence is source-of-truth → content refreshed
+    expect(rows[0].verified_by).toBe(RECEIPT);         // gate provenance PRESERVED (COALESCE)
+  });
+
+  test('a NEW verification on UPSERT wins over an existing null (COALESCE new-else-preserve)', async () => {
+    await engine.insertFacts([{ fact: 'Unverified at row 7.', source: 'mcp:extract_facts', source_markdown_slug: 'wiki/newverif', row_num: 7 }], { source_id: 'default' });
+    // A gate write at the same slot carrying a receipt stamps the row verified.
+    await engine.insertFacts([{ fact: 'Now verified at row 7.', source: 'gate', verified_by: RECEIPT, source_markdown_slug: 'wiki/newverif', row_num: 7 }], { source_id: 'default' });
+    const rows = await readSlot('wiki/newverif', 7);
+    expect(rows.length).toBe(1);
+    expect(rows[0].verified_by).toBe(RECEIPT);          // new verification applied
+    expect(rows[0].fact).toBe('Now verified at row 7.');
   });
 });

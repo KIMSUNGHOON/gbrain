@@ -3775,7 +3775,28 @@ export class PostgresEngine implements BrainEngine {
             ${input.row_num}, ${input.source_markdown_slug},
             ${claimMetric}, ${claimValue}, ${claimUnit}, ${claimPeriod},
             ${eventType}, ${verifiedBy}
-          ) RETURNING id
+          )
+          -- PR-5 fast-follow: row_num-aware fence reconcile. The W5.3 carve-out
+          -- spares a VERIFIED row (verified_by NOT NULL) from deleteFactsForPage,
+          -- so it keeps occupying its (source_id, source_markdown_slug, row_num)
+          -- slot. A plain INSERT of the re-extracted fence row at that slot would
+          -- collide on idx_facts_fence_key and roll back the whole page batch.
+          -- UPSERT instead: the fence is the source of truth for content, so
+          -- refresh every fence-derived column from EXCLUDED, but COALESCE-PRESERVE
+          -- the gate-written verified_by (the fence row carries null; a real new
+          -- verification, if any, wins). code_symbol_* aren't in this path, so
+          -- they're left untouched on the surviving row.
+          ON CONFLICT (source_id, source_markdown_slug, row_num) WHERE row_num IS NOT NULL DO UPDATE SET
+            entity_slug = EXCLUDED.entity_slug, fact = EXCLUDED.fact, kind = EXCLUDED.kind,
+            visibility = EXCLUDED.visibility, notability = EXCLUDED.notability, context = EXCLUDED.context,
+            valid_from = EXCLUDED.valid_from, valid_until = EXCLUDED.valid_until, source = EXCLUDED.source,
+            source_session = EXCLUDED.source_session, confidence = EXCLUDED.confidence,
+            embedding = EXCLUDED.embedding, embedded_at = EXCLUDED.embedded_at,
+            claim_metric = EXCLUDED.claim_metric, claim_value = EXCLUDED.claim_value,
+            claim_unit = EXCLUDED.claim_unit, claim_period = EXCLUDED.claim_period,
+            event_type = EXCLUDED.event_type,
+            verified_by = COALESCE(EXCLUDED.verified_by, facts.verified_by)
+          RETURNING id
         `;
         out.push(Number(ins[0].id));
       }
