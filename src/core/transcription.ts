@@ -8,6 +8,7 @@
 
 import { statSync, readFileSync } from 'fs';
 import { basename, extname } from 'path';
+import { isAirGap } from './airgap.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,6 +56,13 @@ export async function transcribe(
   audioPath: string,
   config: TranscriptionConfig = {},
 ): Promise<TranscriptionResult> {
+  // Air-gap tripwire (v0.42.50.0): audio transcription POSTs the raw audio to a
+  // cloud Whisper endpoint (api.groq.com / api.openai.com). This function has no
+  // callers today, but it's a live egress path — fail closed in air-gap so a
+  // future re-wiring of media-ingest can't silently egress. No-op otherwise.
+  if (isAirGap()) {
+    throw new Error('air-gap: audio transcription is disabled (cloud Whisper egress vector).');
+  }
   // Validate file exists and is audio
   const stat = statSync(audioPath);
   const ext = extname(audioPath).toLowerCase();

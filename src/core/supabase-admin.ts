@@ -4,6 +4,8 @@
  * The access token is NOT persisted — used once and discarded.
  */
 
+import { isAirGap } from './airgap.ts';
+
 /**
  * Extract project ref from any Supabase URL format.
  * Supports: dashboard URL, direct connection, pooler, project URL.
@@ -36,6 +38,12 @@ export async function discoverPoolerUrl(
   token: string,
   projectRef: string,
 ): Promise<string> {
+  // Air-gap tripwire (v0.42.50.0): the Supabase Management API (api.supabase.com)
+  // is a cloud egress vector. No callers today, but fail closed in air-gap so a
+  // future re-wiring of Supabase setup can't egress. No-op otherwise.
+  if (isAirGap()) {
+    throw new Error('air-gap: the Supabase management API is disabled (cloud egress vector); use on-prem Postgres.');
+  }
   const res = await fetch(
     `https://api.supabase.com/v1/projects/${projectRef}/database`,
     { headers: { Authorization: `Bearer ${token}` } },

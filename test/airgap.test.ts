@@ -493,3 +493,25 @@ describe('SF-5 A10 connect-probe refuses remote MCP in air-gap', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// F2 (v0.42.50.0) — dead-code egress tripwires. transcription / supabase-admin
+// have no callers today but carry live cloud-egress fetches; air-gap fails them
+// closed so a future re-wiring can't silently egress.
+// ---------------------------------------------------------------------------
+describe('F2 — dead-code egress tripwires', () => {
+  test('transcribe() refuses in air-gap before any file I/O', async () => {
+    const { transcribe } = await import('../src/core/transcription.ts');
+    await withEnv({ GBRAIN_AIRGAP: '1' }, async () => {
+      // Guard is the first statement → throws before statSync on the bogus path.
+      await expect(transcribe('/nonexistent/audio.mp3')).rejects.toThrow(/air-gap: audio transcription/);
+    });
+  });
+
+  test('discoverPoolerUrl() refuses in air-gap before the Supabase fetch', async () => {
+    const { discoverPoolerUrl } = await import('../src/core/supabase-admin.ts');
+    await withEnv({ GBRAIN_AIRGAP: '1' }, async () => {
+      await expect(discoverPoolerUrl('tok', 'project-ref')).rejects.toThrow(/air-gap: the Supabase management API/);
+    });
+  });
+});
