@@ -37,9 +37,23 @@
  * commit 13 wires it.
  */
 
-import type { BrainEngine, FactInsertStatus, NewFact } from '../engine.ts';
+import type { BrainEngine, FactInsertStatus, NewFact, FactRow } from '../engine.ts';
 import { isFactsBackstopEligible } from './eligibility.ts';
 import type { PageType } from '../types.ts';
+import { OperationError } from '../operations.ts';
+import type { VerifierVerdict } from '../verifier-receipt.ts';
+import { decideSupersede } from './supersede-decide.ts';
+
+/**
+ * PR-4 / W4.4: parse the supersede θ config knob. Unset / blank / out-of-range ⇒ `null`
+ * (disabled-until-calibrated): the decider returns independent (insert-only). A calibrated θ
+ * is a value in (0, 1], stamped on `verified_by` provenance when the offline calibration lands.
+ */
+function parseSupersedeTheta(raw: string | null): number | null {
+  if (raw == null) return null;
+  const t = Number.parseFloat(raw.trim());
+  return Number.isFinite(t) && t > 0 && t <= 1 ? t : null;
+}
 
 export interface FactsBackstopCtx {
   engine: BrainEngine;
@@ -70,6 +84,15 @@ export interface FactsBackstopCtx {
   visibility?: 'private' | 'world';
   /** Override the chat model (extract_facts forwards user's model param when set). */
   model?: string;
+  /**
+   * PR-4 / W4.3 (Stage 4 — Gate 2): the honor-validated verifier verdict for this write,
+   * threaded from `OperationContext.verifierVerdict` by the extract_facts op. The fact-grain
+   * Gate 2 backstop refuses a remote (`remote !== false`) `visibility:'world'` write that is
+   * not backed by a PASS verdict — defense-in-depth for the dispatch Gate 1, enforced at the
+   * actual facts write chokepoint. Trusted internal callers (sync, dream cycle, CLI) run with
+   * `remote === false` and are exempt (consistent with Gate 1's trust boundary).
+   */
+  verifierVerdict?: { verdict: VerifierVerdict; contentAddress: string };
 }
 
 /** Discriminated return shape based on FactsBackstopCtx.mode. */
@@ -291,6 +314,21 @@ async function runPipelineWithBody(
     return { inserted: 0, duplicate: 0, superseded: 0, fact_ids: [] };
   }
 
+  // PR-4 / W4.3 (Stage 4 — Gate 2, fact-grain strict throw): a remote (untrusted) write of
+  // world-visibility facts must be backed by a verifier PASS verdict, else it is refused
+  // here — BEFORE extraction or any DB write, so a denial has ZERO side-effect. This is the
+  // fact-grain backstop for the dispatch Gate 1, enforced at the actual facts write
+  // chokepoint (`runPipelineWithBody`). Trusted internal callers (sync / dream cycle / CLI)
+  // run with `remote === false` and are exempt, consistent with Gate 1's trust boundary.
+  // Fail-closed: a missing / non-pass verdict denies.
+  if (ctx.remote !== false && (ctx.visibility ?? 'private') === 'world' && ctx.verifierVerdict?.verdict !== 'pass') {
+    throw new OperationError(
+      'permission_denied',
+      `a remote world-visibility facts write requires a verifier PASS verdict (Gate 2)`,
+      'Promote shared facts through a verified write; a deterministic verifier PASS is required.',
+    );
+  }
+
   const facts = await extractFactsFromTurn({
     turnText: input.turnText,
     sessionId: ctx.sessionId,
@@ -305,6 +343,13 @@ async function runPipelineWithBody(
   const filter = ctx.notabilityFilter ?? 'all';
   const visibility = ctx.visibility ?? 'private';
 
+  // PR-4 / W4.2+W4.4 (Stage 4 — Gate 2 supersede): the deterministic supersede decider runs
+  // ONLY when a verifier PASS verdict is present (supersession is a destructive expire — no
+  // verdict ⇒ no decider ⇒ prior row preserved), AND only with a calibrated θ. Both gates are
+  // off by default, so supersede is inert until an operator wires a verifier + calibrates θ.
+  const supersedeTheta = parseSupersedeTheta(await ctx.engine.getConfig('facts.supersede_theta'));
+  const verdictPass = ctx.verifierVerdict?.verdict === 'pass';
+
   let inserted = 0;
   let duplicate = 0;
   let superseded = 0;
@@ -315,6 +360,8 @@ async function runPipelineWithBody(
   type SurvivedFact = {
     f: typeof facts[number];
     resolvedSlug: string | null;
+    /** W4.2: prior-row id this fact supersedes (destructive expire), or null. */
+    supersedeId: number | null;
   };
   const survived: SurvivedFact[] = [];
 
@@ -332,8 +379,9 @@ async function runPipelineWithBody(
     // have no embeddings; FS lock + sync invariant means DB == fence
     // at write time). Threshold 0.95 unchanged.
     let matchedExistingId: number | null = null;
+    let candidates: FactRow[] = [];
     if (resolvedSlug && f.embedding) {
-      const candidates = await ctx.engine.findCandidateDuplicates(
+      candidates = await ctx.engine.findCandidateDuplicates(
         ctx.sourceId,
         resolvedSlug,
         f.fact,
@@ -357,7 +405,23 @@ async function runPipelineWithBody(
       continue;
     }
 
-    survived.push({ f, resolvedSlug });
+    // PR-4 / W4.2 (Gate 2 supersede): a survived (non-duplicate) fact may UPDATE a prior row
+    // (same entity, same claim_metric, newer valid_from, cosine ≥ θ). The deterministic
+    // decider is the SOLE supersede producer (A15 disabled the LLM branch) and runs only under
+    // a PASS verdict + calibrated θ. (FactRow candidates carry no claim_metric, so the typed-
+    // claim PRIMARY path needs an engine-fetch extension to activate; the entity+cosine FALLBACK
+    // path works today. Both are inert until θ is calibrated.)
+    let supersedeId: number | null = null;
+    if (verdictPass && supersedeTheta != null && resolvedSlug && f.embedding && candidates.length > 0) {
+      const dec = decideSupersede(
+        { entity_slug: resolvedSlug, claim_metric: f.claim_metric ?? null, valid_from: f.valid_from ?? null, embedding: f.embedding },
+        candidates.map(c => ({ id: c.id, entity_slug: c.entity_slug, claim_metric: null, valid_from: c.valid_from, embedding: c.embedding })),
+        supersedeTheta,
+      );
+      if (dec.decision === 'supersede') supersedeId = dec.supersedes_id;
+    }
+
+    survived.push({ f, resolvedSlug, supersedeId });
   }
 
   if (survived.length === 0) {
@@ -369,7 +433,10 @@ async function runPipelineWithBody(
   const byEntity = new Map<string, SurvivedFact[]>();
   const unparented: SurvivedFact[] = [];
   for (const s of survived) {
-    if (s.resolvedSlug === null) {
+    if (s.resolvedSlug === null || s.supersedeId !== null) {
+      // unparented, OR a superseding write: the fence batch (`engine.insertFacts`) has no
+      // supersede flow, so route the destructive expire through the scalar `insertFact`
+      // executor (which both engines support identically). Inert today (no supersedeId set).
       unparented.push(s);
     } else {
       const list = byEntity.get(s.resolvedSlug) ?? [];
@@ -398,7 +465,7 @@ async function runPipelineWithBody(
     for (const s of unparented) legacyBucket.push(s);
   }
 
-  for (const { f, resolvedSlug } of legacyBucket) {
+  for (const { f, resolvedSlug, supersedeId } of legacyBucket) {
     const newFact: NewFact = {
       fact: f.fact,
       kind: f.kind,
@@ -410,7 +477,9 @@ async function runPipelineWithBody(
       confidence: f.confidence,
       embedding: f.embedding ?? null,
     };
-    const result = await ctx.engine.insertFact(newFact, { source_id: ctx.sourceId }); // gbrain-allow-direct-insert: legacy DB-only fallback for unparented / thin-client facts (no entity page to fence onto)
+    // W4.2: pass supersedeId when the decider chose to supersede a prior row (the scalar
+    // insertFact executor does the atomic insert + expire in one txn). null ⇒ plain insert.
+    const result = await ctx.engine.insertFact(newFact, { source_id: ctx.sourceId, ...(supersedeId != null ? { supersedeId } : {}) }); // gbrain-allow-direct-insert: legacy DB-only fallback for unparented / thin-client facts (no entity page to fence onto)
     fact_ids.push(result.id);
     if (result.status === 'inserted') inserted += 1;
     else if ((result.status as FactInsertStatus) === 'duplicate') duplicate += 1;

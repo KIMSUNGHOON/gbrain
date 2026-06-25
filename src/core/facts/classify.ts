@@ -200,7 +200,15 @@ function parseClassifierJson(
   if (json.matched_id == null || !candidateIds.has(json.matched_id)) return null;
 
   if (json.decision === 'duplicate') return { decision: 'duplicate', matched_id: json.matched_id };
-  if (json.decision === 'supersede') return { decision: 'supersede', supersedes_id: json.matched_id };
+  // PR-4 / A15 (co-land with W4.1): the LLM classifier is NO LONGER a supersede producer.
+  // Supersession is destructive (it expires a prior row) and must be DETERMINISTIC — the
+  // air-gap verifier flow has no LLM gateway at all, and even when an LLM is present a
+  // non-deterministic second producer would make the supersede behavior unrepeatable. The
+  // sole supersede producer is `decideSupersede` (src/core/facts/supersede-decide.ts), gated
+  // on a calibrated θ. An LLM `supersede` verdict is therefore downgraded to `independent`
+  // (keep both rows — conservative); the deterministic decider expires the prior row only
+  // when its rule + θ fire.
+  if (json.decision === 'supersede') return { decision: 'independent' };
   return null;
 }
 
