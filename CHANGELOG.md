@@ -2,6 +2,19 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.45.0] - 2026-06-25
+
+**Stage 4 of the verifier substrate: a destructive fact "supersede" (expiring a prior fact) can no longer happen without a verifier PASS, and shared-scope fact writes are now refused at the fact-grain write chokepoint too — not just at dispatch.** This adds the deterministic, no-LLM supersede decider and the fact-grain Gate 2, both gated so the destructive path stays inert (insert-only) until a verifier is wired and the similarity threshold calibrated. Private writes and local CLI use are unchanged.
+
+### Added
+- **Deterministic supersede decider (no LLM).** A new fact supersedes a prior one only when they share an entity + claim, the new one is strictly newer, and similarity clears a calibrated threshold; otherwise both are kept (conservative — a false supersede would silently expire a still-true fact). Disabled until the threshold is calibrated.
+- **Gate 2 — fact-grain write authorization.** A remote `visibility:'world'` (shared-scope) fact write without a verifier PASS verdict is refused at the facts write chokepoint, before any row is written (zero side-effect). Defense-in-depth for the Stage-3 dispatch gate; trusted internal writers and private writes are exempt.
+
+### Changed
+- **Supersession is now deterministic.** The LLM classifier no longer decides to supersede a fact; the deterministic decider is the sole producer. Facts the model would previously have superseded are kept independent until the decider — with a calibrated threshold and a verifier PASS — fires. More conservative: no destructive expire without verification.
+
+### To take advantage of v0.42.45.0
+`gbrain upgrade`. No change to private writes or local CLI use. Fact supersession and shared-scope fact promotion now require a verifier PASS; both stay inert (insert-only) until you wire a verifier and calibrate the supersede threshold (`facts.supersede_theta`).
 ## [0.42.44.0] - 2026-06-25
 
 **Stage 3 of the verifier substrate: a world-visibility (shared-scope) write now requires a verifier PASS — enforced at the one place every remote transport funnels through.** The receipt carrier and honor-time plumbing landed in 0.42.43.0; this turns them load-bearing. When a remote caller asks to write a fact with `visibility: 'world'` — a promotion from personal to shared scope — the dispatcher now requires BOTH the `shared_write` capability AND a server-verified PASS verdict before the operation handler runs; otherwise the write is refused with zero side-effect. The verdict is resolved server-side from a deposited receipt and is never trusted from the request, so a writer cannot vouch for its own work. Private writes and trusted local CLI use are unchanged.
