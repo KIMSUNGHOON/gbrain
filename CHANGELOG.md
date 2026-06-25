@@ -2,6 +2,16 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.49.0] - 2026-06-25
+
+**Fast-follow to the verifier provenance work: a verified fact and its page's re-extracted facts no longer fight over the same row, so a `gbrain sync` reconciles cleanly instead of dropping the page's facts.** A verified fact is kept across a re-sync (it isn't wiped like ordinary extracted facts), which meant the page's re-extraction could land on the slot the verified fact still holds and the whole page's fact batch would roll back. The fence reconcile is now slot-aware: it updates that row from the markdown (the source of truth for content) while preserving the verification stamp. No behavior change on a default install — there is no verified fact to collide with until a verifier is wired.
+
+### Fixed
+- **Re-sync no longer drops a page's facts when a verified fact is present.** The fact-write path now reconciles by-slot (upsert) instead of failing on a unique-index collision; the markdown refreshes the row's content and the verification provenance is preserved. Applies identically on both engines (PGLite and Postgres).
+
+### To take advantage of v0.42.49.0
+`gbrain upgrade`. No change on a default install — the fix only matters once a verifier is wired and facts carry provenance; until then it is a no-op.
+
 ## [0.42.48.0] - 2026-06-25
 
 **Stage 7 of the verifier substrate: the verification stage that proves the earlier stages actually hold.** This release adds no behavior — it adds the tests and CI guards that pin the verifier gates so a future refactor can't silently re-open them. The single facts-write chokepoint is now covered (it had no tests before), a denied promotion is proven to leave zero rows behind, the supersede path is checked for parity across both engines, and a new fail-closed CI guard keeps the verifier capability isolated from write capabilities.
