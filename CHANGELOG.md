@@ -2,6 +2,17 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.50.0] - 2026-06-25
+
+**Follow-up hardening that closes the loop on the verifier and air-gap work.** Three small, defensive changes: two dormant code paths that could reach the cloud are now refused under air-gap before they can, and two gaps in the verifier test coverage are filled. No runtime behavior change on a default install.
+
+### Added
+- **Air-gap tripwires on two dormant egress paths.** Audio transcription and the Supabase management API have no callers today, but both carry a live outbound call; under air-gap they now fail closed before reaching the network, so a future re-wiring can't silently egress.
+- **Verifier acceptance coverage.** A real OAuth-transport end-to-end test proves a remote shared/world write without a verifier verdict is refused over HTTP (not just in the unit dispatch tests), with a private-write control showing the refusal is promotion-specific. Plus unit coverage that the supersede decider keeps both rows (never expires one) when an embedding is missing — the conservative, non-destructive default.
+
+### To take advantage of v0.42.50.0
+`gbrain upgrade`. No change on a default install — this is defensive hardening and test coverage.
+
 ## [0.42.49.0] - 2026-06-25
 
 **Fast-follow to the verifier provenance work: a verified fact and its page's re-extracted facts no longer fight over the same row, so a `gbrain sync` reconciles cleanly instead of dropping the page's facts.** A verified fact is kept across a re-sync (it isn't wiped like ordinary extracted facts), which meant the page's re-extraction could land on the slot the verified fact still holds and the whole page's fact batch would roll back. The fence reconcile is now slot-aware: it updates that row from the markdown (the source of truth for content) while preserving the verification stamp. No behavior change on a default install — there is no verified fact to collide with until a verifier is wired.
