@@ -67,8 +67,11 @@ Per-file detail is in `docs/architecture/KEY_FILES.md`.
   Forward-referenced columns/indexes go in the bootstrap probe set (guarded by
   `test/schema-bootstrap-coverage.test.ts`).
 - **Contract-first.** `src/core/operations.ts` is the single source; CLI + MCP are generated
-  from it. Every op carries `scope: 'read'|'write'|'admin'` + optional `localOnly`. HTTP
-  dispatch enforces scope/localOnly before the handler runs.
+  from it. Every op carries a `scope` (the `Scope` union in `src/core/scope.ts`) + optional
+  `localOnly`. The per-op scope gate is transport-agnostic — it lives in the shared dispatcher
+  (`src/mcp/dispatch.ts`), NOT HTTP-only — firing before the handler for every untrusted caller
+  (`ctx.remote !== false`; unauthenticated stdio inherits `DEFAULT_LOCAL_PIPE_SCOPES`). `verifier`
+  and `shared_write` are non-admin-implied siblings (admin does NOT imply them).
 - **Migrations.** Schema DDL lives in the `MIGRATIONS` array in `src/core/migrate.ts`.
   `CREATE INDEX CONCURRENTLY` needs `transaction: false` (pre-drop invalid remnants on
   Postgres; plain `CREATE INDEX` on PGLite via `sqlFor.pglite`).
