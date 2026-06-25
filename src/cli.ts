@@ -20,6 +20,7 @@ import {
   justUpgradedPath,
 } from './core/self-upgrade.ts';
 import { loadConfig, loadConfigFileOnly, loadConfigWithEngine, toEngineConfig, isThinClient } from './core/config.ts';
+import { isAirGap } from './core/airgap.ts';
 import type { GBrainConfig } from './core/config.ts';
 import type { AIGatewayConfig } from './core/ai/types.ts';
 import type { BrainEngine } from './core/engine.ts';
@@ -344,6 +345,20 @@ async function main() {
   // Fix for the silent-empty-results bug class that motivated this whole release.
   const cfgPre = loadConfig();
   if (isThinClient(cfgPre)) {
+    // A10 (v0.42.47.0, PR-6 — BLOCKING): in air-gap, thin-client / remote-MCP
+    // mode is forbidden. A thin client has NO local DB and routes every op over
+    // an outbound MCP connection to a remote `gbrain serve` — a standing egress
+    // vector with no SSRF/allowlist guard on the transport. Air-gap requires a
+    // local engine (engine=postgres + DATABASE_URL). Fail-closed: refuse before
+    // any remote routing. Defense-in-depth backstop also lives in
+    // mcp-client.ts:buildClient (A10).
+    if (isAirGap(cfgPre)) {
+      console.error(
+        '[gbrain] air-gap: thin-client / remote-MCP mode is forbidden (outbound egress vector). ' +
+        'Configure a local engine (engine=postgres + DATABASE_URL) instead of remote_mcp.',
+      );
+      process.exit(1);
+    }
     if (op.localOnly) {
       refuseThinClient(command, cfgPre!.remote_mcp!.mcp_url);
     }

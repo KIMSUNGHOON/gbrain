@@ -22,8 +22,9 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { isAirGap } from './airgap.ts';
 
-export type ConnectProbeReason = 'auth' | 'unreachable' | 'timeout' | 'tool_error' | 'unknown';
+export type ConnectProbeReason = 'auth' | 'unreachable' | 'timeout' | 'tool_error' | 'unknown' | 'air_gap';
 
 /** Default smoke-probe timeout. Single source of truth shared with connect.ts. */
 export const DEFAULT_PROBE_TIMEOUT_MS = 15_000;
@@ -111,6 +112,12 @@ export async function probeBrainIdentity(
   token: string,
   opts: { timeoutMs?: number; deps?: ProbeDeps } = {},
 ): Promise<ConnectProbeResult> {
+  // A10 (v0.42.47.0, PR-6 — SF-5): this probe opens its OWN remote MCP socket
+  // (separate from mcp-client.ts:buildClient), so it needs its own air-gap
+  // refusal. Never throws (the probe contract) — return the fail result.
+  if (isAirGap()) {
+    return { ok: false, reason: 'air_gap', message: 'air-gap: remote MCP connections are forbidden (outbound egress vector).' };
+  }
   const deps = opts.deps ?? DEFAULT_DEPS;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
   const controller = new AbortController();

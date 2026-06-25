@@ -17,7 +17,49 @@
 import { execFileSync } from 'child_process';
 import { lstatSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { isInternalUrl } from './url-safety.ts';
+import { isInternalUrl, hostInAllowlist, parseHostAllowlist } from './url-safety.ts';
+import { isAirGap } from './airgap.ts';
+import { loadConfig } from './config.ts';
+
+/**
+ * A21 (v0.42.47.0, PR-6): git-host allowlist for air-gap. Consulted ONLY in
+ * air-gap mode. env `GBRAIN_GIT_HOST_ALLOWLIST` ∪ `config.airgap.git_host_allowlist`.
+ * Separate from the A9 fetch allowlist — git egress is its own surface.
+ */
+function getGitHostAllowlist(): string[] {
+  const fromEnv = parseHostAllowlist(process.env.GBRAIN_GIT_HOST_ALLOWLIST);
+  const fromCfg = (loadConfig()?.airgap?.git_host_allowlist ?? []).map(s => s.toLowerCase());
+  return [...fromEnv, ...fromCfg];
+}
+
+/**
+ * A21 enforcement (v0.42.47.0, PR-6). No-op outside air-gap. In air-gap, throws
+ * `host_not_allowed` unless `hostname` is on the git-host allowlist (empty
+ * allowlist ⇒ deny ALL remote git). Called at EVERY git-egress chokepoint
+ * (`parseRemoteUrl`, `cloneRepo`, `pullRepo`) — NOT just `parseRemoteUrl`,
+ * because routine paths (`pullRepo(path)`, `recloneIfMissing → cloneRepo(url)`)
+ * reach the socket without going through the parser. Enforcing at the layer
+ * that actually opens the connection is the fail-closed contract.
+ */
+export function assertGitHostAllowedInAirGap(hostname: string): void {
+  if (!isAirGap()) return;
+  if (!hostInAllowlist((hostname || '').toLowerCase(), getGitHostAllowlist())) {
+    throw new RemoteUrlError(
+      'host_not_allowed',
+      `air-gap: git host "${hostname || '(unparseable)'}" is not on the allowlist ` +
+        `(set airgap.git_host_allowlist / GBRAIN_GIT_HOST_ALLOWLIST to your on-prem git host)`,
+    );
+  }
+}
+
+/** Best-effort hostname extraction for the socket-layer air-gap check. Empty string ⇒ deny. */
+function hostnameForAirGap(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
+}
 
 /**
  * Git CLI accepts two flag positions:
@@ -60,7 +102,9 @@ export type RemoteUrlErrorCode =
   | 'unsupported_scheme'
   | 'embedded_credentials'
   | 'path_traversal'
-  | 'internal_target';
+  | 'internal_target'
+  // A21 (v0.42.47.0, PR-6): host not on the air-gap git-host allowlist.
+  | 'host_not_allowed';
 
 export class RemoteUrlError extends Error {
   constructor(public code: RemoteUrlErrorCode, message: string) {
@@ -120,6 +164,15 @@ export function parseRemoteUrl(s: string): ParsedRemoteUrl {
       );
     }
   }
+  // A21 (v0.42.47.0, PR-6): in air-gap, git egress is restricted to an explicit
+  // host allowlist (e.g. the on-prem GitLab). The MORE restrictive gate, runs
+  // last: an empty allowlist denies ALL remote git (forcing local-tree /
+  // `--no-pull`). The on-prem host is typically private, so the operator pairs
+  // `GBRAIN_ALLOW_PRIVATE_REMOTES=1` (passes the internal-target gate above)
+  // with `GBRAIN_GIT_HOST_ALLOWLIST=gitlab.corp.internal` (passes this gate).
+  // ALSO enforced at the socket layer (cloneRepo/pullRepo) so callers that skip
+  // this parser can't bypass it. No-op outside air-gap.
+  assertGitHostAllowedInAirGap(url.hostname);
   return { url: s, hostname: url.hostname };
 }
 
@@ -156,6 +209,11 @@ const GIT_ENV = {
  * - Throws GitOperationError on failure; caller is responsible for cleanup.
  */
 export function cloneRepo(url: string, destDir: string, opts: CloneOpts = {}): void {
+  // A21 (MF-2): enforce the air-gap git-host allowlist HERE, at the socket
+  // layer — `recloneIfMissing` passes the stored origin straight to cloneRepo
+  // without re-running parseRemoteUrl, so the parser alone fails open. No-op
+  // outside air-gap; fail-closed on an unparseable url (empty hostname).
+  assertGitHostAllowedInAirGap(hostnameForAirGap(url));
   if (existsSync(destDir)) {
     let entries: string[];
     try {
@@ -201,6 +259,25 @@ export function cloneRepo(url: string, destDir: string, opts: CloneOpts = {}): v
 
 /** Pull a repo with --ff-only and the same SSRF-defensive flags as cloneRepo. */
 export function pullRepo(repoPath: string, opts: { timeoutMs?: number } = {}): void {
+  // A21 (MF-1): `gbrain sync`'s steady-state `git pull` is the PRIMARY, default-on
+  // git egress and it reaches here by PATH (no url), bypassing parseRemoteUrl.
+  // In air-gap, read the clone's configured origin and enforce the allowlist
+  // before opening the connection. Fail-closed: an unreadable / unparseable
+  // origin yields an empty hostname → denied.
+  if (isAirGap()) {
+    let origin = '';
+    try {
+      origin = execFileSync('git', ['-C', repoPath, 'remote', 'get-url', 'origin'], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 10_000,
+        env: { ...process.env, ...GIT_ENV },
+        encoding: 'utf8',
+      }).trim();
+    } catch {
+      /* no origin / not a repo → empty hostname → denied below */
+    }
+    assertGitHostAllowedInAirGap(hostnameForAirGap(origin));
+  }
   const args: string[] = ['-C', repoPath, ...GIT_SSRF_FLAGS, 'pull', ...GIT_SSRF_SUBCOMMAND_FLAGS, '--ff-only'];
   try {
     execFileSync('git', args, {

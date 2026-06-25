@@ -22,6 +22,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { loadConfig, toEngineConfig } from '../core/config.ts';
 import { createEngine } from '../core/engine-factory.ts';
+import { isAirGap } from '../core/airgap.ts';
 import type { BrainEngine } from '../core/engine.ts';
 import { sqlQueryForEngine, executeRawJsonb, type SqlQuery } from '../core/sql-query.ts';
 
@@ -184,6 +185,15 @@ async function revoke(name: string) {
 async function test(url: string, token: string) {
   if (!url || !token) {
     console.error('Usage: auth test <url> --token <token>');
+    process.exit(1);
+  }
+
+  // A10 (v0.42.47.0, PR-6): `gbrain auth test <url>` POSTs to an arbitrary
+  // remote MCP URL — the same remote-MCP egress class blocked at callRemoteTool
+  // / buildClient / connect-probe. Refuse in air-gap. Operator-invoked (no
+  // remote trigger), so this is the last local-CLI egress seam to close.
+  if (isAirGap()) {
+    console.error('[gbrain] air-gap: remote MCP smoke-test (`auth test`) is disabled (outbound egress vector).');
     process.exit(1);
   }
 

@@ -8,6 +8,7 @@ import {
   semverLte,
 } from '../core/semver.ts';
 import { writeUpdateCache, type UpdateMarker } from '../core/self-upgrade.ts';
+import { isAirGap } from '../core/airgap.ts';
 
 /** Best-effort cache write — a read-only ~/.gbrain must never make the check throw. */
 function safeWriteCache(marker: UpdateMarker): void {
@@ -50,6 +51,11 @@ function upgradeCommandForMethod(method: string): string {
  * refresh, never the hot path, but a tight bound keeps the refresh cheap.
  */
 export async function fetchLatestRelease(): Promise<{ tag: string; published_at: string; url: string } | null> {
+  // A4/A5 (v0.42.47.0, PR-6 — SF-1): the lowest-level GitHub egress for update
+  // checks. Fail-closed in air-gap: behave as "no release found" (the function's
+  // documented null contract) without opening the socket. Covers every caller —
+  // `runCheckUpdate`, the `--refresh-cache` warm path, and the startup hook.
+  if (isAirGap()) return null;
   try {
     const res = await fetch('https://api.github.com/repos/garrytan/gbrain/releases/latest', {
       headers: { 'User-Agent': `gbrain/${VERSION}` },
@@ -141,6 +147,16 @@ export async function refreshUpdateCache(): Promise<void> {
 export async function runCheckUpdate(args: string[]) {
   if (args.includes('--help') || args.includes('-h')) {
     console.log('Usage: gbrain check-update [--json] [--refresh-cache]\n\nCheck for new GBrain versions.\n\nOnly reports minor/major version bumps (v0.X.0), not patches.\nFails silently on network errors.\n\n--refresh-cache  Fetch + update the self-upgrade cache, print nothing (used by\n                 the CLI startup hook\'s detached refresh).');
+    return;
+  }
+
+  // A4/A5 (v0.42.47.0, PR-6 — SF-1): update checks are an egress vector; refuse
+  // in air-gap. `fetchLatestRelease` is also guarded (the silent backstop), but
+  // an explicit `gbrain check-update` should say why it did nothing.
+  if (isAirGap()) {
+    if (!args.includes('--refresh-cache')) {
+      console.error('[gbrain] air-gap: update checks are disabled (GitHub egress). Manage versions via your on-prem channel.');
+    }
     return;
   }
 

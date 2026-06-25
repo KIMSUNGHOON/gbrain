@@ -137,9 +137,10 @@ export {
   hostnameToOctets,
   isPrivateIpv4,
   isInternalUrl,
+  isAllowedEgressHost,
 } from '../core/url-safety.ts';
 
-import { isInternalUrl } from '../core/url-safety.ts';
+import { isInternalUrl, isAllowedEgressHost } from '../core/url-safety.ts';
 
 export async function executeHealthCheck(
   check: HealthCheck,
@@ -183,8 +184,11 @@ export async function executeHealthCheck(
           return { ...base, status: 'fail', output: `Missing env var in URL: ${check.url}` };
         }
         // B4: scheme allowlist. B3: manual redirect with per-hop re-validation.
-        if (isInternalUrl(url)) {
-          return { ...base, status: 'blocked', output: `Blocked: URL targets internal/private network or uses non-http(s) scheme: ${check.url}` };
+        // A-SCAN (v0.42.47.0, PR-6): this http health-check makes an outbound
+        // request to a user-configured URL — an egress vector. Fold it into the
+        // A9 air-gap egress allowlist (no-op for cloud installs).
+        if (isInternalUrl(url) || !isAllowedEgressHost(url)) {
+          return { ...base, status: 'blocked', output: `Blocked: URL targets internal/private network, uses non-http(s) scheme, or is not on the air-gap egress allowlist: ${check.url}` };
         }
         const headers: Record<string, string> = {};
         if (check.headers) {
@@ -226,8 +230,8 @@ export async function executeHealthCheck(
           } catch {
             return { ...base, status: 'blocked', output: `Blocked: malformed redirect Location header from ${currentUrl}` };
           }
-          if (isInternalUrl(next)) {
-            return { ...base, status: 'blocked', output: `Blocked: redirect hop ${hop + 1} targets internal URL: ${next}` };
+          if (isInternalUrl(next) || !isAllowedEgressHost(next)) {
+            return { ...base, status: 'blocked', output: `Blocked: redirect hop ${hop + 1} targets internal URL or off-allowlist host: ${next}` };
           }
           if (hop === MAX_REDIRECTS) {
             return { ...base, status: 'fail', output: `${check.label || 'HTTP'}: exceeded ${MAX_REDIRECTS} redirect hops` };

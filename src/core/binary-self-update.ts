@@ -27,6 +27,7 @@
 import { chmodSync, closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { isAirGap } from './airgap.ts';
 
 export interface ReleaseAsset {
   name: string;
@@ -39,7 +40,9 @@ export type BinarySelfUpdateReason =
   | 'no_asset'
   | 'download_failed'
   | 'smoke_failed'
-  | 'replace_failed';
+  | 'replace_failed'
+  // A4/A5 (v0.42.47.0, PR-6): refused because the install is air-gapped.
+  | 'air_gap';
 
 export interface BinarySelfUpdateResult {
   ok: boolean;
@@ -136,6 +139,12 @@ export async function runBinarySelfUpdate(
   targetPath: string = process.execPath,
   deps: BinarySelfUpdateDeps = {},
 ): Promise<BinarySelfUpdateResult> {
+  // A4/A5 (v0.42.47.0, PR-6 — SF-1): binary self-update fetches from GitHub +
+  // executes the downloaded artifact — forbidden in air-gap. Fail-closed before
+  // any fetch.
+  if (isAirGap()) {
+    return { ok: false, reason: 'air_gap' };
+  }
   const platform = deps.platform ?? process.platform;
   const arch = deps.arch ?? process.arch;
   const fetchRelease = deps.fetchRelease ?? defaultFetchRelease;

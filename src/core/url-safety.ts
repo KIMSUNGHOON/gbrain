@@ -131,3 +131,82 @@ export function isInternalUrl(urlStr: string): boolean {
 
   return false;
 }
+
+// ── A9 (v0.42.47.0, PR-6): default-deny egress ALLOWLIST for air-gap mode ─────
+//
+// Today's SSRF defense (`isInternalUrl` above, `ssrf-validate.ts`) is a
+// DENY-LIST: it blocks internal/metadata/private targets and lets everything
+// else out. That is correct for a cloud install. An air-gapped deploy needs the
+// inverse at the fetch boundary: an ALLOWLIST where only explicitly-permitted
+// on-prem hosts may egress, and everything else — including the public internet
+// — is denied. These helpers add that gate WITHOUT changing cloud behavior:
+// `isAllowedEgressHost` is a pure pass-through (returns true) whenever air-gap
+// is off, so the deny-list semantics above are fully preserved for default
+// installs. The gate is wired at the central SSRF chokepoint
+// (`ssrf-validate.ts:validateAndResolveUrl`, covering image-loader +
+// `fetchWithSSRFGuard`), the url-reachable resolver, and the integrations HTTP
+// check. Git egress has its own allowlist (A21, `git-remote.ts`); inference
+// egress is governed by the LiteLLM base-URL pin + the D-MEM firewall, NOT this
+// app-layer gate.
+
+import { isAirGap } from './airgap.ts';
+import { loadConfig, type GBrainConfig } from './config.ts';
+
+/** Split a comma/whitespace-separated allowlist string into normalized host entries. */
+export function parseHostAllowlist(raw: string | undefined | null): string[] {
+  if (!raw) return [];
+  return raw.split(/[\s,]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+}
+
+/**
+ * Match a hostname against a single allowlist entry. Supports:
+ *   - exact:           'gitlab.corp.internal'  ⇒ only that host
+ *   - dot-suffix:      '.corp.internal'        ⇒ corp.internal AND any *.corp.internal
+ *   - star-suffix:     '*.corp.internal'       ⇒ same as '.corp.internal'
+ * Trailing dots and case are normalized on both sides.
+ */
+export function hostMatchesAllowEntry(host: string, entry: string): boolean {
+  const h = host.toLowerCase().replace(/\.$/, '');
+  let e = entry.toLowerCase().replace(/\.$/, '');
+  if (!e) return false;
+  if (e.startsWith('*.')) e = e.slice(1); // '*.x' → '.x'
+  if (e.startsWith('.')) {
+    const apex = e.slice(1); // '.x' → 'x'
+    return h === apex || h.endsWith(e);
+  }
+  return h === e;
+}
+
+/** True iff `host` matches any entry in `allowlist`. Empty allowlist ⇒ false (deny). */
+export function hostInAllowlist(host: string, allowlist: readonly string[]): boolean {
+  return allowlist.some(e => hostMatchesAllowEntry(host, e));
+}
+
+/** Egress allowlist (A9): env `GBRAIN_EGRESS_ALLOWLIST` ∪ `config.airgap.egress_allowlist`. */
+export function getEgressAllowlist(config?: GBrainConfig | null): string[] {
+  const cfg = config !== undefined ? config : loadConfig();
+  const fromEnv = parseHostAllowlist(process.env.GBRAIN_EGRESS_ALLOWLIST);
+  const fromCfg = (cfg?.airgap?.egress_allowlist ?? []).map(s => s.toLowerCase());
+  return [...fromEnv, ...fromCfg];
+}
+
+/**
+ * A9 — egress allowlist gate. Returns true (ALLOW) for every URL when NOT in
+ * air-gap, so cloud installs keep today's deny-list behavior unchanged. In
+ * air-gap, only allowlisted hosts pass; an EMPTY allowlist denies ALL egress.
+ * Fail-closed on malformed URLs / non-http(s) schemes. `config` is optional
+ * (threaded through where available to avoid a redundant config read).
+ */
+export function isAllowedEgressHost(urlStr: string, config?: GBrainConfig | null): boolean {
+  if (!isAirGap(config)) return true; // cloud: no-op pass-through (deny-list still applies elsewhere)
+  let url: URL;
+  try {
+    url = new URL(urlStr);
+  } catch {
+    return false; // malformed → deny
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  let host = url.hostname.toLowerCase();
+  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+  return hostInAllowlist(host, getEgressAllowlist(config));
+}

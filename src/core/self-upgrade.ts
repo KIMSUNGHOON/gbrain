@@ -29,6 +29,7 @@
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { gbrainPath } from './config.ts';
+import { isAirGap } from './airgap.ts';
 import { acquirePackLock, type PackLockOpts } from './schema-pack/pack-lock.ts';
 import { isMinorOrMajorBump, isValidVersionString, parseSemver, semverGt, semverLte } from './semver.ts';
 
@@ -478,6 +479,15 @@ function normalizeMode(raw: unknown): SelfUpgradeMode | null {
 export function resolveSelfUpgradeMode(
   cfg: { self_upgrade?: { mode?: string } } | null | undefined,
 ): SelfUpgradeMode {
+  // A4/A5 (v0.42.47.0, PR-6 — SF-2): in air-gap, force 'off' UNCONDITIONALLY —
+  // BEFORE the env/config precedence below. self-upgrade only ever reaches
+  // GitHub (hardcoded, not repointable on-prem), so any non-off mode in air-gap
+  // means cloud egress. Per the airgap.ts no-off-override principle, no env
+  // (`GBRAIN_SELF_UPGRADE_MODE=auto`) or config may re-enable it. 'off' also
+  // kills the detached startup `check-update` spawn (`if (mode==='off') return`
+  // at cli.ts). The explicit `check-update`/`upgrade` commands are independently
+  // refused at their own entry points (those bypass mode resolution entirely).
+  if (isAirGap()) return 'off';
   const env = normalizeMode(process.env.GBRAIN_SELF_UPGRADE_MODE);
   if (env) return env;
   const fromCfg = normalizeMode(cfg?.self_upgrade?.mode);

@@ -23,7 +23,7 @@
  */
 
 import { lookup as nodeDnsLookup } from 'node:dns/promises';
-import { isInternalUrl, isPrivateIpv4, hostnameToOctets } from './url-safety.ts';
+import { isInternalUrl, isPrivateIpv4, hostnameToOctets, isAllowedEgressHost } from './url-safety.ts';
 
 // Module-level seam so tests can swap DNS resolution without `mock.module`
 // (which is banned in non-serial unit tests per scripts/check-test-isolation.sh R2).
@@ -63,7 +63,9 @@ export type SSRFErrorCode =
   | 'DNS_RESOLUTION_FAILED'
   | 'DNS_RESOLVED_INTERNAL'
   | 'SSRF_REDIRECT_DENIED'
-  | 'SSRF_HOP_LIMIT';
+  | 'SSRF_HOP_LIMIT'
+  // A9 (v0.42.47.0, PR-6): host not on the air-gap egress allowlist.
+  | 'EGRESS_NOT_ALLOWLISTED';
 
 /**
  * Validate a URL against SSRF policy and resolve its hostname to an IP.
@@ -92,6 +94,18 @@ export async function validateAndResolveUrl(urlStr: string): Promise<ResolvedTar
 
   if (url.username || url.password) {
     throw new SSRFError('CREDENTIALS_IN_URL', 'Credentials embedded in URL are not permitted');
+  }
+
+  // Layer 0 (A9 air-gap): default-deny egress allowlist. No-op (always passes)
+  // for cloud installs; in air-gap, only allowlisted hosts may egress and an
+  // empty allowlist denies all. Runs BEFORE the deny-list layers so an
+  // air-gap-blocked host fails with the precise EGRESS_NOT_ALLOWLISTED code
+  // even when it isn't an internal/private target.
+  if (!isAllowedEgressHost(urlStr)) {
+    throw new SSRFError(
+      'EGRESS_NOT_ALLOWLISTED',
+      `air-gap: ${truncate(urlStr)} is not on the egress allowlist (set airgap.egress_allowlist / GBRAIN_EGRESS_ALLOWLIST)`,
+    );
   }
 
   // Layer 1: static check covers IPv4 hex/octal/single-int, IPv6 ULA + link-local,

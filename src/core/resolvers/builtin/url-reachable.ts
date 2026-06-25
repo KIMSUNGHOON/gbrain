@@ -25,6 +25,8 @@ import {
   hostnameToOctets,
   isPrivateIpv4,
 } from '../../../commands/integrations.ts';
+import { isAllowedEgressHost } from '../../url-safety.ts';
+import { isAirGap } from '../../airgap.ts';
 import type {
   Resolver,
   ResolverContext,
@@ -71,7 +73,13 @@ export const urlReachableResolver: Resolver<UrlReachableInput, UrlReachableOutpu
   },
 
   async available(_ctx: ResolverContext): Promise<boolean> {
-    // Nothing to check — fetch is globally available in Bun.
+    // A12 (v0.42.47.0, PR-6): in air-gap, this resolver makes arbitrary outbound
+    // HEAD/GET requests to user-supplied URLs — a standing egress vector — so it
+    // self-disables. The resolve() path below ALSO gates each hop on the A9
+    // egress allowlist (belt-and-suspenders for any caller that bypasses
+    // availability).
+    if (isAirGap()) return false;
+    // Nothing else to check — fetch is globally available in Bun.
     return true;
   },
 
@@ -84,12 +92,15 @@ export const urlReachableResolver: Resolver<UrlReachableInput, UrlReachableOutpu
       throw new ResolverError('schema', 'url_reachable: url must be a non-empty string', 'url_reachable');
     }
 
-    // SSRF gate — refuse to probe internal/private/metadata endpoints (by hostname string).
-    if (isInternalUrl(url)) {
+    // SSRF gate — refuse to probe internal/private/metadata endpoints (by
+    // hostname string). A12 (v0.42.47.0, PR-6): in air-gap, ALSO refuse any host
+    // not on the A9 egress allowlist (default-deny). `isAllowedEgressHost` is a
+    // no-op pass for cloud installs, so this adds nothing outside air-gap.
+    if (isInternalUrl(url) || !isAllowedEgressHost(url)) {
       return {
         value: {
           reachable: false,
-          reason: 'blocked: internal/private/metadata hostname or non-http(s) scheme',
+          reason: 'blocked: internal/private/metadata hostname, non-http(s) scheme, or not on air-gap egress allowlist',
         },
         confidence: 1,
         source: 'head-check',
@@ -171,8 +182,9 @@ export const urlReachableResolver: Resolver<UrlReachableInput, UrlReachableOutpu
           };
         }
         const nextUrl = new URL(location, currentUrl).toString();
-        // Re-validate each hop against SSRF (hostname string).
-        if (isInternalUrl(nextUrl)) {
+        // Re-validate each hop against SSRF (hostname string) + A9 air-gap
+        // egress allowlist (no-op for cloud installs).
+        if (isInternalUrl(nextUrl) || !isAllowedEgressHost(nextUrl)) {
           return {
             value: {
               reachable: false,

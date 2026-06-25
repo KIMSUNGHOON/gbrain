@@ -141,6 +141,28 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
       process.exit(1);
     }
 
+    // v0.42.47.0 (PR-6 — SF-3): refuse DB-plane writes to air-gap keys. `isAirGap()`
+    // reads ONLY env + the file plane (never the DB), so `gbrain config set
+    // airgap.enabled true` would print success while every egress lock stays OFF
+    // — the exact silent-no-op class above, but for a SECURITY lockdown (strictly
+    // more dangerous). Same fail-closed posture, no --force escape.
+    if (key === 'airgap.enabled' || key.startsWith('airgap.')) {
+      console.error(`[config] ${key} is a file-plane / env air-gap field; the DB plane is NEVER read for it.`);
+      console.error(`[config] Setting it here would print success while leaving every egress lock OFF (silent no-op).`);
+      console.error(`[config]`);
+      console.error(`[config] Enable air-gap one of these ways instead:`);
+      console.error(`[config]   export GBRAIN_AIRGAP=1                          # env (wins everywhere)`);
+      console.error(`[config]   # or add to ~/.gbrain/config.json:`);
+      console.error(`[config]   {`);
+      console.error(`[config]     "airgap": { "enabled": true,`);
+      console.error(`[config]                 "egress_allowlist": ["proxy.corp.internal"],`);
+      console.error(`[config]                 "git_host_allowlist": ["gitlab.corp.internal"] }`);
+      console.error(`[config]   }`);
+      console.error(`[config]`);
+      console.error(`[config] No --force escape: a silent no-op on a security lockdown is the bug this rejection closes.`);
+      process.exit(1);
+    }
+
     // v0.37.10.0 (D6): strict unknown-key rejection with --force escape hatch.
     // Catches the silent-no-op class for namespaced typos like `embedding.provider`,
     // `embedding.model`, `embedding.dimensions` — Levenshtein suggests the canonical

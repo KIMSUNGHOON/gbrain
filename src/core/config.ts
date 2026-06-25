@@ -262,6 +262,28 @@ export interface GBrainConfig {
   };
 
   /**
+   * v0.42.47.0 (PR-6 / Stage 6) — air-gap mode. When `enabled`, every
+   * behavior-changing egress lock fires (engine=postgres required, code/config
+   * indexing rejected, default-deny egress + git-host allowlists, thin-client
+   * forbidden, self-upgrade off, x-api de-registered, url-reachable disabled,
+   * remote search_by_image blocked). Read ONLY through `isAirGap()` in
+   * `src/core/airgap.ts` (env `GBRAIN_AIRGAP=1` wins; file plane only, never the
+   * DB plane, so the answer is identical at pre-engine boot and at runtime).
+   * Absent / `enabled:false` ⇒ default cloud install, byte-for-byte unaffected.
+   *
+   * `egress_allowlist` (A9) and `git_host_allowlist` (A21) are consulted ONLY
+   * in air-gap mode; an empty allowlist there means default-DENY (route through
+   * the on-prem proxy/GitLab the firewall pins, or nothing). Entries match a
+   * hostname exactly, or as a `.suffix` / `*.suffix` wildcard. Env overlays:
+   * `GBRAIN_EGRESS_ALLOWLIST`, `GBRAIN_GIT_HOST_ALLOWLIST` (comma-separated).
+   */
+  airgap?: {
+    enabled?: boolean;
+    egress_allowlist?: string[];
+    git_host_allowlist?: string[];
+  };
+
+  /**
    * Thin-client mode (multi-topology v1). When set, this install does NOT
    * have a local DB; it talks to a remote `gbrain serve --http` over MCP.
    * The CLI dispatch guard in `src/cli.ts` checks for this field BEFORE
@@ -814,6 +836,11 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'embedding_columns',
   'search_embedding_column',
   'remote_mcp',
+  // Air-gap mode (v0.42.47.0, PR-6 / Stage 6)
+  'airgap',
+  'airgap.enabled',
+  'airgap.egress_allowlist',
+  'airgap.git_host_allowlist',
   'sync',
   'sync.repo_path',
   'sync.last_commit',
@@ -910,6 +937,7 @@ export const KNOWN_CONFIG_KEY_PREFIXES: readonly string[] = [
   'mcp.',               // mcp.publish_skills, mcp.skills_dir (PR1 skill catalog)
   'autopilot.',         // autopilot.nightly_quality_probe.*, autopilot.auto_drain.* (#1685)
   'self_upgrade.',      // v0.42 self-upgrade (mode, quiet_hours, state)
+  'airgap.',            // v0.42.47.0 air-gap (enabled, egress_allowlist, git_host_allowlist)
 ];
 
 export function saveConfig(config: GBrainConfig): void {

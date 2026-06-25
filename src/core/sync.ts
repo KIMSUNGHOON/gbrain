@@ -12,6 +12,7 @@
  */
 
 import { CJK_SLUG_CHARS } from './cjk.ts';
+import { isAirGap } from './airgap.ts';
 // v0.37.7.0 #1169 submodule-detection helpers. Bottom-of-file already
 // aliases existsSync as `_existsSync` for other purposes; the top-of-file
 // import keeps the pruneDir helper's deps near its callsite.
@@ -179,12 +180,18 @@ function isMultimodalEnabled(): boolean {
 }
 
 function isAllowedByStrategy(path: string, strategy: SyncStrategy): boolean {
+  // A18 (v0.42.47.0, PR-6) defense-in-depth: in air-gap, code/config files are
+  // never collected for sync (markdown-only brain), so the walker drops them
+  // before they're even read. The authoritative reject is at the import-file
+  // embed chokepoint; this just avoids the wasted read. An explicit
+  // `--strategy code` in air-gap therefore collects nothing.
+  const dropCode = isAirGap();
   if (strategy === 'markdown') return isMarkdownFilePath(path);
-  if (strategy === 'code') return isCodeFilePath(path);
+  if (strategy === 'code') return dropCode ? false : isCodeFilePath(path);
   // 'auto' / default: markdown + code, plus images when multimodal is on.
   return (
     isMarkdownFilePath(path) ||
-    isCodeFilePath(path) ||
+    (!dropCode && isCodeFilePath(path)) ||
     (isMultimodalEnabled() && isImageFilePath(path))
   );
 }
