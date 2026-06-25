@@ -7,7 +7,7 @@
  */
 
 import type { BrainEngine } from '../core/engine.ts';
-import { operations, OperationError } from '../core/operations.ts';
+import { operations, OperationError, resolveWriteScope } from '../core/operations.ts';
 import type { Operation, OperationContext, AuthInfo } from '../core/operations.ts';
 import { loadConfig } from '../core/config.ts';
 import { hasScope, DEFAULT_LOCAL_PIPE_SCOPES } from '../core/scope.ts';
@@ -308,6 +308,41 @@ export async function dispatchToolCall(
   }
 
   try {
+    // PR-3 / W3.1 (Stage 3 — Gate 1, boundary authorization): the single dispatch-level
+    // choke for promotion-class writes, fired for untrusted (remote) mutating write ops
+    // BEFORE op.handler (so a denial has zero side-effect). Trusted local CLI is
+    // structurally excluded — it never reaches dispatch and sets `remote: false`, which
+    // `ctx.remote !== false` skips. Throws OperationError('permission_denied'), caught and
+    // serialized by the catch below (fail-closed).
+    if (ctx.remote !== false && op.mutating === true && op.scope === 'write') {
+      // W3.2: enforce write authority on the requested target source (throws
+      // permission_denied for a cross-source write the caller doesn't own; a no-op when
+      // no explicit source_id is requested — the established write path).
+      const requestedSource = typeof safeParams.source_id === 'string' ? safeParams.source_id : undefined;
+      resolveWriteScope(ctx, requestedSource);
+      // Promotion-class (param-visible): a `visibility: 'world'` write promotes personal →
+      // shared. It requires BOTH the `shared_write` capability (a non-admin-implied sibling,
+      // so an admin/stdio caller cannot satisfy it) AND a server-injected verifier PASS
+      // verdict. Fail-closed: a missing / forged / non-pass verdict denies. The shared_write
+      // check lives in the predicate body (NOT static `op.scope`), so the same op's
+      // world-write and private-write are distinguished (doc 26 §7 correction #1).
+      if (safeParams.visibility === 'world') {
+        if (!hasScope(ctx.auth?.scopes ?? DEFAULT_LOCAL_PIPE_SCOPES, 'shared_write')) {
+          throw new OperationError(
+            'permission_denied',
+            `operation ${name} with visibility 'world' (shared write) requires the 'shared_write' capability`,
+            'Request a shared_write grant — admin does not imply it.',
+          );
+        }
+        if (ctx.verifierVerdict?.verdict !== 'pass') {
+          throw new OperationError(
+            'permission_denied',
+            `operation ${name} with visibility 'world' (shared write) requires a verifier PASS receipt`,
+            'Promotion to shared scope is gated on a deterministic verifier PASS.',
+          );
+        }
+      }
+    }
     const result = await op.handler(ctx, safeParams);
     const out: ToolResult = { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     // v0.31 (eD3 + eE4): best-effort _meta.brain_hot_memory injection.
