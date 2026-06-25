@@ -275,17 +275,15 @@ export async function runExtractFacts(
       const inserted = await engine.insertFacts(extracted, { source_id: sourceId }); // gbrain-allow-direct-insert: extract_facts cycle phase reconciles fence → DB
       result.factsInserted += inserted.inserted;
     } catch (err) {
-      // PR-5 / W5.3 containment: a VERIFIED fact (verified_by set) survives the wipe above
-      // (the carve-out), so a re-extracted fence row can land on a row_num the surviving
-      // verified row still occupies — colliding on `idx_facts_fence_key` and rolling back this
-      // page's whole batch. Contain it to THIS page (log + continue) rather than letting the
-      // throw abort the entire extract phase. INERT by default (verified_by is null until a
-      // verifier is operator-wired). Fast-follow (before the verifier flow is enabled): make the
-      // fence reconcile row_num-aware over surviving verified rows (UPSERT preserving
-      // verified_by, or skip occupied slots) — this affects every wipe-then-reinsert site
-      // (extract-facts, cycle/phases/consolidate, cycle/phantom-redirect).
+      // Generic per-page containment: a fence reconcile insert failure is scoped
+      // to THIS page (log + continue) rather than aborting the whole extract
+      // phase. The PR-5 / W5.3 verified-row row_num collision that this originally
+      // guarded is now resolved at the engine: `insertFacts` UPSERTs on the
+      // `idx_facts_fence_key` slot (refresh fence content, COALESCE-preserve
+      // verified_by), so a surviving verified row no longer collides. This catch
+      // remains as defense-in-depth for any OTHER insert failure.
       result.warnings.push(
-        `${slug}: fence reconcile insert failed (likely a verified-row row_num collision; W5.3 fast-follow): ${err instanceof Error ? err.message : String(err)}`,
+        `${slug}: fence reconcile insert failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

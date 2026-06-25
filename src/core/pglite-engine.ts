@@ -3635,7 +3635,22 @@ export class PGLiteEngine implements BrainEngine {
                  $14, $15,
                  $16, $17, $18, $19,
                  $20, $21
-               ) RETURNING id`
+               )
+               -- PR-5 fast-follow row_num-aware fence reconcile (parity with
+               -- postgres-engine insertFacts): a verified row spared by the W5.3
+               -- carve-out keeps its fence-key slot, so UPSERT rather than collide.
+               -- Refresh fence content from EXCLUDED; COALESCE-preserve verified_by.
+               ON CONFLICT (source_id, source_markdown_slug, row_num) WHERE row_num IS NOT NULL DO UPDATE SET
+                 entity_slug = EXCLUDED.entity_slug, fact = EXCLUDED.fact, kind = EXCLUDED.kind,
+                 visibility = EXCLUDED.visibility, notability = EXCLUDED.notability, context = EXCLUDED.context,
+                 valid_from = EXCLUDED.valid_from, valid_until = EXCLUDED.valid_until, source = EXCLUDED.source,
+                 source_session = EXCLUDED.source_session, confidence = EXCLUDED.confidence,
+                 embedding = EXCLUDED.embedding, embedded_at = EXCLUDED.embedded_at,
+                 claim_metric = EXCLUDED.claim_metric, claim_value = EXCLUDED.claim_value,
+                 claim_unit = EXCLUDED.claim_unit, claim_period = EXCLUDED.claim_period,
+                 event_type = EXCLUDED.event_type,
+                 verified_by = COALESCE(EXCLUDED.verified_by, facts.verified_by)
+               RETURNING id`
             : `INSERT INTO facts (
                  source_id, entity_slug, fact, kind, visibility, notability, context,
                  valid_from, valid_until, source, source_session, confidence,
@@ -3649,7 +3664,20 @@ export class PGLiteEngine implements BrainEngine {
                  $15, $16,
                  $17, $18, $19, $20,
                  $21, $22
-               ) RETURNING id`,
+               )
+               -- PR-5 fast-follow row_num-aware fence reconcile (parity with the
+               -- no-embedding branch above + postgres-engine insertFacts).
+               ON CONFLICT (source_id, source_markdown_slug, row_num) WHERE row_num IS NOT NULL DO UPDATE SET
+                 entity_slug = EXCLUDED.entity_slug, fact = EXCLUDED.fact, kind = EXCLUDED.kind,
+                 visibility = EXCLUDED.visibility, notability = EXCLUDED.notability, context = EXCLUDED.context,
+                 valid_from = EXCLUDED.valid_from, valid_until = EXCLUDED.valid_until, source = EXCLUDED.source,
+                 source_session = EXCLUDED.source_session, confidence = EXCLUDED.confidence,
+                 embedding = EXCLUDED.embedding, embedded_at = EXCLUDED.embedded_at,
+                 claim_metric = EXCLUDED.claim_metric, claim_value = EXCLUDED.claim_value,
+                 claim_unit = EXCLUDED.claim_unit, claim_period = EXCLUDED.claim_period,
+                 event_type = EXCLUDED.event_type,
+                 verified_by = COALESCE(EXCLUDED.verified_by, facts.verified_by)
+               RETURNING id`,
           embedStr === null
             ? [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, embeddedAt, input.row_num, input.source_markdown_slug, claimMetric, claimValue, claimUnit, claimPeriod, eventType, verifiedBy]
             : [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, embedStr, embeddedAt, input.row_num, input.source_markdown_slug, claimMetric, claimValue, claimUnit, claimPeriod, eventType, verifiedBy],
