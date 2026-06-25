@@ -2,6 +2,19 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.47.0] - 2026-06-25
+
+**Stage 6 of the verifier substrate: an opt-in air-gap mode that makes gbrain safe to run on an isolated, on-prem network.** A single flag flips the fork to a default-deny egress posture — every outbound network path is either routed through an operator-pinned on-prem proxy/host or refused. The flag is off by default and read from the env + file plane only, so a default cloud install is byte-for-byte unaffected: every gate is a pure no-op until you turn air-gap on.
+
+### Added
+- **Air-gap mode (`GBRAIN_AIRGAP=1` / `airgap.enabled`).** When enabled, the fetch and git boundaries become default-deny host allowlists (`airgap.egress_allowlist`, `airgap.git_host_allowlist`), enforced at the layer that actually opens the connection. Remote-MCP / thin-client mode is refused, code and config files are no longer indexed (markdown-only brains), the engine is required to be Postgres, update checks and self-upgrade are off, the cloud storage backend is refused, and remote multimodal image-query is blocked. The LiteLLM proxy recipe gains chat/expansion/reranker touchpoints so a single on-prem proxy can serve every inference call.
+
+### Changed
+- **`gbrain config set airgap.*` is refused with a file-plane recipe.** The air-gap flag is intentionally read only from the env + file plane (never the DB), so a DB-plane write would be a silent no-op on a security control. The command now points you at `GBRAIN_AIRGAP=1` or `~/.gbrain/config.json` instead.
+
+### To take advantage of v0.42.47.0
+`gbrain upgrade`. No change on a default install — air-gap is off until you set `GBRAIN_AIRGAP=1` (or `airgap.enabled` in `~/.gbrain/config.json`). When you do, set `airgap.egress_allowlist` / `airgap.git_host_allowlist` to your on-prem proxy and git host, pin inference to your LiteLLM proxy, and pair it with a host-level egress firewall as the backstop. An empty allowlist in air-gap denies all egress by design.
+
 ## [0.42.46.0] - 2026-06-25
 
 **Stage 5 of the verifier substrate: a verified fact now carries the receipt that authorized it, and that provenance survives a `gbrain sync` instead of being wiped and lost.** Two nullable provenance columns land on `facts` — one recording the verifier receipt id, the others reserved for CodeGraph cross-references — and the per-page re-sync wipe now spares verified rows. Everything is additive and inert: nothing populates these columns until a verifier is wired, so default installs see only two new nullable columns and no behavior change.
