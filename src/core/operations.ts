@@ -3729,6 +3729,10 @@ const extract_facts: Operation = {
       source: 'mcp:extract_facts',
       visibility,
       mode: 'inline',  // declarative; runFactsPipeline always inline
+      // PR-4 / W4.3 (Gate 2): thread the trust flag + honor-validated verdict so the
+      // fact-grain backstop can refuse a remote world-visibility write without a PASS.
+      remote: ctx.remote,
+      verifierVerdict: ctx.verifierVerdict,
     });
 
     return {
