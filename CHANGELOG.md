@@ -2,6 +2,18 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.48.0] - 2026-06-25
+
+**Stage 7 of the verifier substrate: the verification stage that proves the earlier stages actually hold.** This release adds no behavior — it adds the tests and CI guards that pin the verifier gates so a future refactor can't silently re-open them. The single facts-write chokepoint is now covered (it had no tests before), a denied promotion is proven to leave zero rows behind, the supersede path is checked for parity across both engines, and a new fail-closed CI guard keeps the verifier capability isolated from write capabilities.
+
+### Added
+- **Write-path no-bypass coverage.** A test pins that every fact write funnels through the one gated chokepoint, with a closed allowlist of the legitimate direct-write sites; a CI guard (now wired into the `verify` gate) fails the build if a new direct write appears outside that allowlist.
+- **Acceptance suite.** A denied remote shared/world write leaves zero new rows (not just "an error was thrown"); a verdict cannot be smuggled through tool parameters; the supersede transition is identical on both engines; the embedder being down keeps a fact (with no embedding) rather than losing it, and never lets a destructive supersede proceed without a real similarity check.
+- **`check-verifier-cogrant` CI guard.** Fails the build if the `verifier` capability is ever granted alongside a write capability — the separation that prevents a writer from vouching for its own write. Plus an operational deploy-checklist for the preconditions that live outside code (process and database-credential isolation).
+
+### To take advantage of v0.42.48.0
+`gbrain upgrade`. No runtime change — this release is tests and CI guards. Contributors get a build that fails fast if a change weakens a verifier gate.
+
 ## [0.42.47.0] - 2026-06-25
 
 **Stage 6 of the verifier substrate: an opt-in air-gap mode that makes gbrain safe to run on an isolated, on-prem network.** A single flag flips the fork to a default-deny egress posture — every outbound network path is either routed through an operator-pinned on-prem proxy/host or refused. The flag is off by default and read from the env + file plane only, so a default cloud install is byte-for-byte unaffected: every gate is a pure no-op until you turn air-gap on.
