@@ -2,6 +2,23 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.43.0] - 2026-06-25
+
+**Verifier substrate, stages 1–2: gbrain can now carry a tamper-evident proof that a write was verified, and the per-operation scope check finally runs on every transport — not just over HTTP.** This is foundational plumbing for a verifier-gated write path (the enforcing Gate lands in a follow-up); on its own it changes no write behavior. Three pieces ship together. An immutable, content-addressed receipt store records the identity of a verification output. Honor-time resolution binds a presented receipt to the *current* verifier config and the write's own identity before a verdict is ever trusted — and fails closed on any mismatch, so a stale, forged, or absent receipt simply yields no verdict. And the per-operation scope check moves out of the HTTP server into the shared dispatcher, so stdio, HTTP, and remote callers are all gated identically, before the handler runs. Alongside it, the auth boundary tightens: the pre-OAuth legacy bearer-token grandfather path is retired, so authentication is fail-closed by default.
+
+### Added
+- **VerifierReceipt carrier (migration v118).** An immutable, content-addressed store keyed by the 4-tuple `(config_sha, model_sha, target_sha, run_sha)` — full-width sha256, fixed role order. `deposit_verifier_receipt` (scope `verifier`) is idempotent (`ON CONFLICT DO NOTHING`), so a FAIL receipt can never be overwritten by a PASS for the same identity (replay-binding + tamper resistance). Engine-agnostic; PGLite/Postgres parity pinned by the schema-drift suite.
+- **`verifier` and `shared_write` scopes — non-admin-implied siblings.** `admin` does NOT imply them, so even a broad token cannot deposit a receipt or perform a shared write without an explicit grant.
+- **Honor-time verifier resolution (`src/core/verifier-honor.ts`).** When a request carries a `verifier_receipt` claim, the transport resolves it before dispatch and injects a verdict only when a deposited PASS receipt binds to the current HEAD verifier config (`GBRAIN_VERIFIER_CONFIG_SHA`, supplied server-side, never read from the request) **and** the write's identity. FAIL/inconclusive, stale config, a forged or mis-bound id, an absent receipt, or an unset config all fail closed — no verdict, never a fabricated pass.
+
+### Changed
+- **The per-operation scope check now runs in the shared dispatcher, on every transport.** It previously lived only in the HTTP server, so other callers reached operation handlers without it. It now runs once, before every handler, identically across stdio + HTTP + remote callers. Trusted local CLI invocations by the machine owner are unchanged.
+
+### Security
+- **The pre-OAuth legacy bearer-token grandfather path is retired (migration v117).** Authentication is fail-closed by default; legacy bearer tokens are no longer honored on any transport. Re-issue any such token as a scoped OAuth client.
+
+### To take advantage of v0.42.43.0
+`gbrain upgrade`. The auth boundary tightens automatically — if you authenticated with a pre-OAuth legacy bearer token, it stops being honored on upgrade; re-issue it as a scoped OAuth client (`gbrain auth create`). The receipt store and honor-time plumbing are inert until the enforcing Gate ships, so no write behavior changes today; set `GBRAIN_VERIFIER_CONFIG_SHA` only once you wire a verifier.
 ## [0.42.42.0] - 2026-06-12
 
 **`gbrain query` no longer pays a flat 10-second exit tax on managed Postgres behind a transaction-mode pooler — and CLI exit codes finally tell the truth on PGLite.** On deployments where the pooler holds sockets open past the bounded pool drain (gbrain#2084, a residual of gbrain#1972), every query printed its results and then sat for 10 seconds until the force-exit banner fired. The cause was two-layered: the hard-deadline timer was armed *before* the operation handler, so a multi-second search on a large brain burned the teardown budget (and any operation slower than 10 seconds was silently killed mid-run with exit 0 and truncated output); and the CLI never exited explicitly on success — it waited for Bun's event loop to drain, which a stuck pooler socket can hold open forever.
