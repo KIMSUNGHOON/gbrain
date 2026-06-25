@@ -14,6 +14,7 @@ import {
   pruneDir,
   type SyncStrategy,
 } from '../core/sync.ts';
+import { isAirGap } from '../core/airgap.ts';
 import { sortNewestFirst } from '../core/sort-newest-first.ts';
 import {
   loadCheckpoint,
@@ -499,15 +500,19 @@ function isCollectibleForWalker(
   strategy: SyncStrategy,
   multimodalOn: boolean,
 ): boolean {
+  // A18 (v0.42.47.0, PR-6) defense-in-depth: drop code/config files from the
+  // walker in air-gap (markdown-only brain). The import-file embed chokepoint
+  // is the authoritative reject; this avoids reading the file at all.
+  const dropCode = isAirGap();
   switch (strategy) {
     case 'code':
-      return isCodeFilePath(path);
+      return dropCode ? false : isCodeFilePath(path);
     case 'markdown':
       return isMarkdownFilePath(path) || (multimodalOn && isImageFilePathFromSync(path));
     case 'auto':
       return (
         isMarkdownFilePath(path) ||
-        isCodeFilePath(path) ||
+        (!dropCode && isCodeFilePath(path)) ||
         (multimodalOn && isImageFilePathFromSync(path))
       );
   }

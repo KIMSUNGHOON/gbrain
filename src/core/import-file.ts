@@ -10,6 +10,7 @@ import { findChunkForOffset } from './chunkers/edge-extractor.ts';
 import { extractCodeRefs, imageOfCandidates } from './link-extraction.ts';
 import { embedBatch, embedMultimodal, currentEmbeddingSignature } from './embedding.ts';
 import { slugifyPath, slugifyCodePath, isCodeFilePath } from './sync.ts';
+import { isAirGap } from './airgap.ts';
 import type { ChunkInput, PageInput, PageType } from './types.ts';
 import { computeEffectiveDate } from './effective-date.ts';
 import { MARKDOWN_CHUNKER_VERSION } from './chunkers/recursive.ts';
@@ -935,6 +936,16 @@ export async function importFromFile(
 
   // Route code files through the code import path
   if (isCodeFilePath(relativePath)) {
+    // A18 (v0.42.47.0, PR-6 — BLOCKING): in air-gap, code AND config trees are
+    // never vector-indexed — `gbrain` brains are markdown failure-memory only.
+    // `isCodeFilePath` already matches both source extensions (.cpp/.c/.rs/…)
+    // and config extensions (.json/.yaml/.toml/.hcl/.tf/.sql), so this single
+    // gate rejects whole gem5/ramulator2-style trees, not just .cpp. This is
+    // the actual D-RAG embed chokepoint (the walker filters below are a
+    // defense-in-depth optimization that stops the file from even being read).
+    if (isAirGap()) {
+      return { slug: relativePath, status: 'skipped', chunks: 0, error: 'air-gap: code/config indexing disabled (markdown-only brain)' };
+    }
     return importCodeFile(engine, relativePath, content, {
       noEmbed: opts.noEmbed,
       sourceId: opts.sourceId,

@@ -18,6 +18,7 @@ import {
 } from '../core/resolvers/index.ts';
 import { urlReachableResolver } from '../core/resolvers/builtin/url-reachable.ts';
 import { xHandleToTweetResolver } from '../core/resolvers/builtin/x-api/handle-to-tweet.ts';
+import { isAirGap } from '../core/airgap.ts';
 
 /**
  * Register all embedded builtin resolvers into the given registry.
@@ -28,7 +29,15 @@ export function registerBuiltinResolvers(registry = getDefaultRegistry()): void 
   // Cast each element to the widest shape the registry accepts. The tuple
   // element types diverge (different Input/Output generics) so the union
   // type would not satisfy registry.register's single-signature parameter.
-  const builtins = [urlReachableResolver, xHandleToTweetResolver];
+  //
+  // A11 (v0.42.47.0, PR-6): in air-gap, the x-api resolver (hardcoded
+  // `api.twitter.com`, no allowlist hook) is NOT registered — de-registering is
+  // the correct lock since there is no host to allowlist. The url-reachable
+  // resolver stays registered but self-disables in air-gap via its
+  // `available()` returning false (A12). Cloud installs are unaffected.
+  const builtins = isAirGap()
+    ? [urlReachableResolver]
+    : [urlReachableResolver, xHandleToTweetResolver];
   for (const r of builtins) {
     if (!registry.has(r.id)) registry.register(r as Parameters<typeof registry.register>[0]);
   }

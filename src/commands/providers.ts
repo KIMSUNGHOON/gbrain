@@ -72,7 +72,11 @@ export function formatRecipeTable(recipes: Recipe[], env: NodeJS.ProcessEnv = pr
   rows.push('-'.repeat(totalWidth));
   for (const r of recipes) {
     const hasEmbed = !!r.touchpoints.embedding && (r.touchpoints.embedding.models.length > 0);
-    const hasExpand = !!r.touchpoints.expansion;
+    // v0.42.47.0 (PR-6 MF-4): guard on non-empty models like embed/chat below.
+    // litellm now declares an expansion touchpoint with `models: []` (A1), and
+    // an unguarded `!!expansion` would flip EXPAND→'yes' + render a bogus
+    // `litellm:undefined` option on every install, cloud included.
+    const hasExpand = !!r.touchpoints.expansion && r.touchpoints.expansion.models.length > 0;
     const hasChat = !!r.touchpoints.chat && r.touchpoints.chat.models.length > 0;
     const ready = envReady(r, env);
     const status = ready ? '✓ ready' : `✗ missing ${r.auth_env?.required?.[0] ?? 'setup'}`;
@@ -308,7 +312,7 @@ async function runExplain(args: string[]): Promise<void> {
         cons: consFor(r),
       });
     }
-    if (r.touchpoints.expansion) {
+    if (r.touchpoints.expansion && r.touchpoints.expansion.models.length > 0) {
       const m = r.touchpoints.expansion;
       options.push({
         id: `${r.id}:${m.models[0]}`,

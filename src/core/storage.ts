@@ -5,6 +5,8 @@
  * the backend (Supabase Storage or S3/R2/MinIO), gbrain doesn't care.
  */
 
+import { isAirGap } from './airgap.ts';
+
 export interface StorageBackend {
   upload(path: string, data: Buffer, mime?: string): Promise<void>;
   download(path: string): Promise<Buffer>;
@@ -33,6 +35,16 @@ export interface StorageConfig {
  * Create a StorageBackend from config.
  */
 export async function createStorage(config: StorageConfig): Promise<StorageBackend> {
+  // A8 (v0.42.47.0, PR-6 — SF-4): the Supabase storage backend POSTs brain file
+  // contents to `*.supabase.co` (cloud) on every file_upload / `files sync`,
+  // via a raw fetch that bypasses the A9 allowlist. In air-gap, refuse it
+  // fail-closed (use 's3' → on-prem MinIO, or 'local'). No-op outside air-gap.
+  if (config.backend === 'supabase' && isAirGap()) {
+    throw new Error(
+      "air-gap: the 'supabase' storage backend is forbidden (egress to *.supabase.co). " +
+      "Use storage.backend='s3' (on-prem MinIO) or 'local'.",
+    );
+  }
   switch (config.backend) {
     case 's3': {
       const { S3Storage } = await import('./storage/s3.ts');

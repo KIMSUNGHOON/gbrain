@@ -8,6 +8,7 @@ import { resolve, relative, sep } from 'path';
 import type { BrainEngine } from './engine.ts';
 import { clampSearchLimit } from './engine.ts';
 import type { GBrainConfig } from './config.ts';
+import { isAirGap } from './airgap.ts';
 import type { PageType } from './types.ts';
 import { importFromContent } from './import-file.ts';
 import { writePageThrough } from './write-through.ts';
@@ -1601,6 +1602,16 @@ const query: Operation = {
     // text-only); embeds the image via embedMultimodal and runs a direct
     // vector search against the embedding_image column.
     if (imageData) {
+      // A22 (v0.42.47.0, PR-6): cross-modal image-query routes through a
+      // multimodal embedder that, by default, egresses to a cloud provider.
+      // This branch is reachable by REMOTE callers (`query` is scope:read), so
+      // a remote caller can trigger that egress. Refuse remote callers in
+      // air-gap; local CLI (ctx.remote === false) still works if the operator
+      // pinned a local / LiteLLM multimodal recipe. (The image_url FETCH path is
+      // independently covered by the A9 egress allowlist in ssrf-validate.)
+      if (isAirGap() && ctx.remote !== false) {
+        throw new Error('air-gap: image-query (cross-modal) is disabled for remote callers (multimodal embedding egress vector).');
+      }
       const { embedMultimodal } = await import('./ai/gateway.ts');
       const [vec] = await embedMultimodal([
         { kind: 'image_base64', data: imageData, mime: imageMime },
@@ -4165,6 +4176,16 @@ const search_by_image: Operation = {
   // NOT localOnly: remote MCP callers can pass image_url or image_data
   // (subject to D18 image_path ban + D12 size cap + D23-#6 spend cap).
   handler: async (ctx, p) => {
+    // A22 (v0.42.47.0, PR-6): search_by_image is scope:read (NOT localOnly), so
+    // a remote caller can trigger it — and the image_url variant FETCHES the
+    // image (egress #1) then embeds it via a multimodal embedder that defaults
+    // to a cloud provider (egress #2). Refuse remote callers in air-gap; local
+    // CLI (ctx.remote === false) still works if the operator pinned a local /
+    // LiteLLM multimodal recipe. (Defense-in-depth: the image_url fetch is also
+    // gated by the A9 egress allowlist in ssrf-validate's image-loader path.)
+    if (isAirGap() && ctx.remote !== false) {
+      throw new Error('air-gap: search_by_image is disabled for remote callers (multimodal embedding egress vector).');
+    }
     const imagePath = p.image_path as string | undefined;
     const imageUrl = p.image_url as string | undefined;
     const imageData = p.image_data as string | undefined;

@@ -2,12 +2,23 @@ import { execSync, execFileSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, realpathSync } from 'fs';
 import { basename, join, dirname, resolve } from 'path';
 import { VERSION } from '../version.ts';
+import { isAirGap } from '../core/airgap.ts';
 
 const GBRAIN_GITHUB_REPO = 'garrytan/gbrain';
 
 export async function runUpgrade(args: string[]) {
   if (args.includes('--help') || args.includes('-h')) {
     console.log('Usage: gbrain upgrade [--swap-only]\n\nSelf-update the CLI.\n\nDetects install method (bun, binary, clawhub) and runs the appropriate update.\nAfter upgrading, shows what\'s new and offers to set up new features.\n\n--swap-only  Perform ONLY the binary/source swap and skip post-upgrade\n             (migrations run on the next launch). Used by the autopilot\n             silent self-upgrade channel so the daemon can swap + relaunch\n             without a 30-min blocking post-upgrade inside its tick.');
+    return;
+  }
+
+  // A4/A5 (v0.42.47.0, PR-6 — SF-1): `gbrain upgrade` self-updates from GitHub /
+  // a package manager — egress. Refuse in air-gap (the binary path is also
+  // guarded in runBinarySelfUpdate; this also avoids printing cloud-fetch
+  // instructions for bun/clawhub installs). `runPostUpgrade` (migrations on the
+  // next boot) is NOT gated — it is local-only.
+  if (isAirGap()) {
+    console.error('[gbrain] air-gap: self-upgrade is disabled (GitHub / package-manager egress). Manage versions via your on-prem channel.');
     return;
   }
 

@@ -21,6 +21,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { GBrainConfig } from './config.ts';
+import { isAirGap } from './airgap.ts';
 import { discoverOAuth, mintClientCredentialsToken } from './remote-mcp-probe.ts';
 
 interface CachedToken {
@@ -212,6 +213,13 @@ async function getAccessToken(config: GBrainConfig, force = false): Promise<stri
  * cancel in-flight HTTP requests on timeout or SIGINT.
  */
 async function buildClient(mcpUrl: string, accessToken: string, signal?: AbortSignal): Promise<Client> {
+  // A10 (v0.42.47.0, PR-6) backstop: remote MCP egress is forbidden in air-gap.
+  // The primary gate is at the TOP of callRemoteTool (before the OAuth egress);
+  // this is the last line before the socket opens, covering any other caller
+  // that reaches buildClient directly. Fail closed.
+  if (isAirGap()) {
+    throw new Error('[gbrain] air-gap: remote MCP connections are forbidden (outbound egress vector).');
+  }
   const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
     requestInit: {
       headers: {
@@ -286,6 +294,18 @@ export async function callRemoteTool(
   args: Record<string, unknown> = {},
   opts: CallRemoteToolOptions = {},
 ): Promise<unknown> {
+  // A10 (v0.42.47.0, PR-6 — MF-3): refuse remote MCP egress at the TOP, before
+  // `getAccessToken` (OAuth discovery + token-mint = two outbound fetches) ever
+  // fires. The cli.ts dispatch gate misses CLI-only commands (status/salience/
+  // jobs/…) that route to callRemoteTool through their own thin-client
+  // branches, so this is the real fail-closed chokepoint. The buildClient guard
+  // below stays as a last-line backstop.
+  if (isAirGap()) {
+    throw new RemoteMcpError(
+      'config',
+      '[gbrain] air-gap: remote MCP connections are forbidden (outbound egress vector).',
+    );
+  }
   const remote = requireRemoteMcp(config);
 
   // v0.31.1 (CDX-4): wrap the WHOLE call in normalize-on-error so the
