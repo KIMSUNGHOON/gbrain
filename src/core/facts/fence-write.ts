@@ -66,6 +66,8 @@ export interface FenceInputFact {
   validFrom?: Date;
   embedding: Float32Array | null;
   sessionId: string | null;
+  /** PR-5 / W5.1: verifier receipt id for a verified write; null otherwise. */
+  verified_by?: string | null;
 }
 
 export interface FenceWriteResult {
@@ -266,6 +268,9 @@ export async function writeFactsToFence(
         ...row,
         embedding:      facts[i].embedding,
         source_session: facts[i].sessionId,
+        // PR-5 / W5.1: carry the verifier receipt id across the fence re-parse (it isn't a
+        // fence-text column), stitched by the same row index as embedding/sessionId.
+        verified_by:    facts[i].verified_by ?? null,
       }));
 
       const result = await engine.insertFacts(enriched, { source_id: target.sourceId }); // gbrain-allow-direct-insert: writeFactsToFence is the markdown-first reconcile path; runs only after the atomic fence write commits

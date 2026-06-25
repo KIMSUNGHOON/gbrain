@@ -5271,6 +5271,35 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 119,
+    name: 'facts_verified_by_column',
+    // PR-5 / W5.1 (Stage 5 provenance): `verified_by` records the verifier receipt that
+    // authorized a write — the receipt content-address id (W1.1 `verifier_receipts`), NEVER a
+    // CodeGraph node (A19). Nullable + additive: existing rows and every unverified write stay
+    // NULL, so no behavior change. The format is fixed from day one (receipt content-address),
+    // eliminating re-migration risk. Engine-agnostic ALTER → both engines; column-only, no
+    // forward-reference index (same precedent as facts.event_type at v89). The protected
+    // shared-source carve-out (W5.3) is what makes a verified_by value survive re-sync.
+    idempotent: true,
+    sql: `ALTER TABLE facts ADD COLUMN IF NOT EXISTS verified_by TEXT;`,
+  },
+  {
+    version: 120,
+    name: 'facts_code_symbol_columns',
+    // PR-5 / W5.2 (Stage 5 provenance): CodeGraph cross-reference columns. `code_symbol_ref`
+    // is the resolved symbol identifier; `code_symbol_source` names the resolver that produced
+    // it ('codegraph'); `code_symbol_confidence` is a [0,1] score. All nullable + additive —
+    // POPULATION is deferred (the distiller/resolver production contract is doc 30 PART B); the
+    // resolver skeleton (src/core/resolvers/code-symbol.ts) only declares availability today.
+    // Column-only, no forward-reference index. Engine-agnostic ALTER → both engines.
+    idempotent: true,
+    sql: `
+      ALTER TABLE facts ADD COLUMN IF NOT EXISTS code_symbol_ref        TEXT;
+      ALTER TABLE facts ADD COLUMN IF NOT EXISTS code_symbol_source     TEXT;
+      ALTER TABLE facts ADD COLUMN IF NOT EXISTS code_symbol_confidence REAL;
+    `,
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

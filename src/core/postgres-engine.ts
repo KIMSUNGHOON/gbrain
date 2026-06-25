@@ -3600,6 +3600,8 @@ export class PostgresEngine implements BrainEngine {
     const claimValue  = input.claim_value  ?? null;
     const claimUnit   = input.claim_unit   ?? null;
     const claimPeriod = input.claim_period ?? null;
+    // PR-5 / W5.1: verifier receipt id that authorized this write (null for unverified).
+    const verifiedBy  = input.verified_by  ?? null;
 
     if (ctx.supersedeId !== undefined) {
       // Per-entity advisory lock + atomic insert + supersede in one txn.
@@ -3613,12 +3615,12 @@ export class PostgresEngine implements BrainEngine {
             source_id, entity_slug, fact, kind, visibility, notability, context,
             valid_from, valid_until, source, source_session, confidence,
             embedding, embedded_at,
-            claim_metric, claim_value, claim_unit, claim_period
+            claim_metric, claim_value, claim_unit, claim_period, verified_by
           ) VALUES (
             ${ctx.source_id}, ${entitySlug}, ${input.fact}, ${kind}, ${visibility}, ${notability}, ${context},
             ${validFrom}, ${validUntil}, ${input.source}, ${sourceSession}, ${confidence},
             ${embedLit === null ? null : tx.unsafe(`'${embedLit}'${castSuffix}`)}, ${embeddedAt},
-            ${claimMetric}, ${claimValue}, ${claimUnit}, ${claimPeriod}
+            ${claimMetric}, ${claimValue}, ${claimUnit}, ${claimPeriod}, ${verifiedBy}
           ) RETURNING id
         `;
         const id = Number(ins[0].id);
@@ -3639,12 +3641,12 @@ export class PostgresEngine implements BrainEngine {
           source_id, entity_slug, fact, kind, visibility, notability, context,
           valid_from, valid_until, source, source_session, confidence,
           embedding, embedded_at,
-          claim_metric, claim_value, claim_unit, claim_period
+          claim_metric, claim_value, claim_unit, claim_period, verified_by
         ) VALUES (
           ${ctx.source_id}, ${entitySlug}, ${input.fact}, ${kind}, ${visibility}, ${notability}, ${context},
           ${validFrom}, ${validUntil}, ${input.source}, ${sourceSession}, ${confidence},
           ${embedLit === null ? null : tx.unsafe(`'${embedLit}'${castSuffix}`)}, ${embeddedAt},
-          ${claimMetric}, ${claimValue}, ${claimUnit}, ${claimPeriod}
+          ${claimMetric}, ${claimValue}, ${claimUnit}, ${claimPeriod}, ${verifiedBy}
         ) RETURNING id
       `;
       return Number(ins[0].id);
@@ -3755,6 +3757,8 @@ export class PostgresEngine implements BrainEngine {
         const claimPeriod = input.claim_period ?? null;
         // v0.40.2.0 — event_type column (Commit 1 migration v89).
         const eventType   = input.event_type   ?? null;
+        // PR-5 / W5.1 — verifier receipt id (parity with the scalar insertFact path).
+        const verifiedBy  = input.verified_by  ?? null;
 
         const ins = await tx<Array<{ id: number }>>`
           INSERT INTO facts (
@@ -3763,14 +3767,14 @@ export class PostgresEngine implements BrainEngine {
             embedding, embedded_at,
             row_num, source_markdown_slug,
             claim_metric, claim_value, claim_unit, claim_period,
-            event_type
+            event_type, verified_by
           ) VALUES (
             ${ctx.source_id}, ${entitySlug}, ${input.fact}, ${kind}, ${visibility}, ${notability}, ${context},
             ${validFrom}, ${validUntil}, ${input.source}, ${sourceSession}, ${confidence},
             ${embedLit === null ? null : tx.unsafe(`'${embedLit}'${castSuffix}`)}, ${embeddedAt},
             ${input.row_num}, ${input.source_markdown_slug},
             ${claimMetric}, ${claimValue}, ${claimUnit}, ${claimPeriod},
-            ${eventType}
+            ${eventType}, ${verifiedBy}
           ) RETURNING id
         `;
         out.push(Number(ins[0].id));
@@ -3787,6 +3791,12 @@ export class PostgresEngine implements BrainEngine {
   ): Promise<{ deleted: number }> {
     const sql = this.sql;
     const prefixes = opts?.excludeSourcePrefixes;
+    // PR-5 / W5.3 (Stage 5, protected-source carve-out): a VERIFIED fact (verified_by set by
+    // the Gate 2 write) is NEVER wiped by a page re-sync — `verified_by IS NOT NULL` survives
+    // every `deleteFactsForPage` so the gate-written provenance persists across `gbrain sync`
+    // (the re-extract then dedups new facts against the surviving verified row). An unverified
+    // control row on the same page is still wiped. This is the carve-out that makes Stage 5
+    // provenance durable; the content-digest re-association (doc 29 §5.2) is a later refinement.
     if (prefixes && prefixes.length > 0) {
       // #1928: keep rows whose `source` matches an excluded prefix (e.g.
       // `cli:` conversation facts). COALESCE so NULL/empty-source fence rows
@@ -3796,12 +3806,13 @@ export class PostgresEngine implements BrainEngine {
         DELETE FROM facts
         WHERE source_id = ${source_id}
           AND source_markdown_slug = ${slug}
+          AND verified_by IS NULL
           AND NOT (COALESCE(source, '') LIKE ANY(${patterns}))
       `;
       return { deleted: result.count ?? 0 };
     }
     const result = await sql`
-      DELETE FROM facts WHERE source_id = ${source_id} AND source_markdown_slug = ${slug}
+      DELETE FROM facts WHERE source_id = ${source_id} AND source_markdown_slug = ${slug} AND verified_by IS NULL
     `;
     return { deleted: result.count ?? 0 };
   }
