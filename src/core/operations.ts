@@ -491,6 +491,46 @@ export function resolveRequestedScope(
 }
 
 /**
+ * PR-3 / W3.2 (Stage 3 — Gate 1 write authority): resolve the WRITE-target source
+ * against the caller's write authority. The write-side parallel of
+ * `resolveRequestedScope` (which gates per-source READS). Today's asymmetry is that
+ * reads are per-source gated while writes pin to `ctx.sourceId`. No current write op
+ * declares a source-targeting param (handlers write to `ctx.sourceId`), so this is a
+ * FORWARD-LOOKING defensive boundary: the moment a write op accepts a `source_id`, this
+ * stops a remote caller from targeting a source it has no write authority over — without
+ * having to remember to add the check in the handler. The established `ctx.sourceId`-pinned
+ * write paths are unaffected.
+ *
+ * FAIL-CLOSED for remote callers: a remote caller's write authority is its single granted
+ * write source — `ctx.auth.sourceId` (from `oauth_clients.source_id`), falling back to
+ * `ctx.sourceId`. Requesting an explicit `source_id` that differs from it is
+ * `permission_denied`. Trusted local CLI (`ctx.remote === false`) writes anywhere — the OS
+ * is the trust boundary there. When no `source_id` is requested (the common case, and what
+ * every existing write op does), it is a no-op that returns the caller's write authority,
+ * so it is non-breaking for the established `ctx.sourceId`-only write paths.
+ *
+ * Called by the Gate 1 predicate in `src/mcp/dispatch.ts` for every remote mutating
+ * `scope:'write'` op.
+ */
+export function resolveWriteScope(
+  ctx: OperationContext,
+  requestedSourceId: string | undefined,
+): { sourceId: string } {
+  if (ctx.remote === false) {
+    return { sourceId: requestedSourceId ?? ctx.sourceId ?? 'default' };
+  }
+  const writeAuthority = ctx.auth?.sourceId ?? ctx.sourceId ?? 'default';
+  if (requestedSourceId !== undefined && requestedSourceId !== writeAuthority) {
+    throw new OperationError(
+      'permission_denied',
+      `cannot write to source '${requestedSourceId}' — your write authority is '${writeAuthority}'`,
+      'Write within your own source, or obtain shared_write + a verifier PASS to promote to a shared source.',
+    );
+  }
+  return { sourceId: writeAuthority };
+}
+
+/**
  * Code-intel adapter for `resolveRequestedScope`. Graph traversal
  * (code_callers/code_callees/code_blast/code_flow) is single-source by design —
  * the engine APIs and the traversal cache key take ONE `sourceId` string, not a
