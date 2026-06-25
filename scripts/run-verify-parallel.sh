@@ -47,6 +47,7 @@ CHECKS=(
   "check:admin-scope-drift"
   "check:cli-exec"
   "check:system-of-record"
+  "check:verifier-cogrant"
   "check:eval-glossary"
   "check:no-pii-agent-voice"
   "check:synthetic-corpus-privacy"

@@ -153,6 +153,15 @@ describe('resolveVerifierVerdict — fail-closed branches (→ undefined)', () =
     expect(v).toBeUndefined();
   });
 
+  test('a raw verdict:"pass" field in the claim is inert — authorization derives from the DEPOSITED row, never the claim', async () => {
+    // No receipt deposited (beforeEach wiped the table). The claim is well-formed
+    // (id binds to HEAD) AND screams verdict:'pass'/status:'pass'. resolveVerifierVerdict
+    // reads the DB by content-address; the claim's own verdict field carries zero weight
+    // → undefined. A Generator cannot vouch for itself by shaping the claim blob.
+    const v = await resolveVerifierVerdict(engine, claim({ verdict: 'pass', status: 'pass', result: 'pass' }));
+    expect(v).toBeUndefined();
+  });
+
   test('stale config replay: a PASS deposited under an OLD config cannot authorize at the new HEAD', async () => {
     // Deposit a PASS under OLD_CONFIG for the same (MODEL, TARGET, RUN).
     await depositReceipt(OLD_CONFIG, RUN, 'pass');
