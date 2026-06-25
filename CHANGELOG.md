@@ -2,6 +2,19 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.46.0] - 2026-06-25
+
+**Stage 5 of the verifier substrate: a verified fact now carries the receipt that authorized it, and that provenance survives a `gbrain sync` instead of being wiped and lost.** Two nullable provenance columns land on `facts` — one recording the verifier receipt id, the others reserved for CodeGraph cross-references — and the per-page re-sync wipe now spares verified rows. Everything is additive and inert: nothing populates these columns until a verifier is wired, so default installs see only two new nullable columns and no behavior change.
+
+### Added
+- **`verified_by` provenance.** A fact written through the verifier gate records the receipt that authorized it (a content-address id, server-injected — never settable from a request). Nullable; null for every ordinary write.
+- **CodeGraph cross-reference columns + resolver skeleton.** `code_symbol_ref` / `code_symbol_source` / `code_symbol_confidence` columns, plus a resolver stub that is available only when a local CodeGraph index is present. Population is reserved for a later release.
+
+### Changed
+- **Verified facts survive a page re-sync.** `gbrain sync` reconciles a page by wiping and re-extracting its facts; a fact carrying a verifier receipt is now spared from that wipe, so gate-written provenance persists across syncs. An ordinary (unverified) fact is still reconciled as before.
+
+### To take advantage of v0.42.46.0
+`gbrain upgrade`. No behavior change on a default install — the new columns are nullable and populated only once a verifier is operator-wired. Until then, every fact's `verified_by` is null and the re-sync carve-out is a no-op.
 ## [0.42.45.0] - 2026-06-25
 
 **Stage 4 of the verifier substrate: a destructive fact "supersede" (expiring a prior fact) can no longer happen without a verifier PASS, and shared-scope fact writes are now refused at the fact-grain write chokepoint too — not just at dispatch.** This adds the deterministic, no-LLM supersede decider and the fact-grain Gate 2, both gated so the destructive path stays inert (insert-only) until a verifier is wired and the similarity threshold calibrated. Private writes and local CLI use are unchanged.
