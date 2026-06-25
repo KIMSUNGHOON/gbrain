@@ -730,6 +730,19 @@ const COLUMN_EXEMPTIONS = new Set<string>([
   // brains is invisible to them). Migration is column-only, no FK,
   // no index — bootstrap probe would be pure overhead.
   'facts.event_type',
+  // PR-5 / W5.1 (migration v119) — `verified_by` provenance column (verifier receipt
+  // content-address id). Column-only addition, same class as facts.event_type /
+  // facts.claim_metric: no CREATE INDEX or earlier migration references it, so there is
+  // no forward reference for the schema-blob replay to trip on. The migration handles
+  // fresh installs and pre-existing brains via ADD COLUMN IF NOT EXISTS; both engines'
+  // insertFact/insertFacts write it.
+  'facts.verified_by',
+  // PR-5 / W5.2 (migration v120) — CodeGraph cross-reference columns. Same column-only class
+  // as facts.verified_by: nullable, no CREATE INDEX / earlier reference, population deferred to
+  // doc 30. Migration handles fresh + upgrade via ADD COLUMN IF NOT EXISTS.
+  'facts.code_symbol_ref',
+  'facts.code_symbol_source',
+  'facts.code_symbol_confidence',
   // v0.39.1.0 (migration v88) — schema-pack provenance per-source captured as
   // inline canonical closure snapshot on every eval_candidates row. NULL by
   // default; no index in PGLITE_SCHEMA_SQL references it. Migration handles

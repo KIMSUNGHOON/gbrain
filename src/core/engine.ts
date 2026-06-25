@@ -524,6 +524,13 @@ export interface NewFact {
    * set this — leaving it undefined preserves pre-v0.40 behavior.
    */
   event_type?: string | null;
+  /**
+   * PR-5 / W5.1 (Stage 5 provenance): the verifier receipt content-address id that
+   * authorized this write (NEVER a CodeGraph node). Set by the Gate 2 write path from
+   * `ctx.verifierVerdict.contentAddress` when a verified write lands; left null/undefined
+   * for every unverified write (the common case). Stored in `facts.verified_by` (v119).
+   */
+  verified_by?: string | null;
 }
 
 /** Options shared by list-facts methods. */

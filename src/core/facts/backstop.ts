@@ -476,6 +476,9 @@ async function runPipelineWithBody(
       source_session: f.source_session ?? null,
       confidence: f.confidence,
       embedding: f.embedding ?? null,
+      // PR-5 / W5.1: stamp the verifier receipt id on a verified write (null otherwise —
+      // ctx.verifierVerdict is only set when honor-time resolution returned a PASS).
+      verified_by: ctx.verifierVerdict?.contentAddress ?? null,
     };
     // W4.2: pass supersedeId when the decider chose to supersede a prior row (the scalar
     // insertFact executor does the atomic insert + expire in one txn). null ⇒ plain insert.
@@ -508,6 +511,9 @@ async function runPipelineWithBody(
       validFrom: f.valid_from ?? new Date(),
       embedding: f.embedding ?? null,
       sessionId: f.source_session ?? null,
+      // PR-5 / W5.1: thread the verifier receipt id through the fence path so a verified
+      // world write records verified_by (parity with the scalar bucket). Null otherwise.
+      verified_by: ctx.verifierVerdict?.contentAddress ?? null,
     }));
 
     const result = await writeFactsToFence(
@@ -541,6 +547,8 @@ async function runPipelineWithBody(
           source_session: f.source_session ?? null,
           confidence: f.confidence,
           embedding: f.embedding ?? null,
+          // PR-5 / W5.1: stamp the verifier receipt id on a verified write (null otherwise).
+          verified_by: ctx.verifierVerdict?.contentAddress ?? null,
         };
         const legacyResult = await ctx.engine.insertFact(newFact, { source_id: ctx.sourceId }); // gbrain-allow-direct-insert: stub-guard fallback for unprefixed entity slugs (no fenceable page)
         fact_ids.push(legacyResult.id);

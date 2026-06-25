@@ -3497,6 +3497,8 @@ export class PGLiteEngine implements BrainEngine {
     const claimValue  = input.claim_value  ?? null;
     const claimUnit   = input.claim_unit   ?? null;
     const claimPeriod = input.claim_period ?? null;
+    // PR-5 / W5.1: verifier receipt id (parity with postgres-engine insertFact).
+    const verifiedBy  = input.verified_by  ?? null;
 
     if (ctx.supersedeId !== undefined) {
       // Supersede flow: insert new + expire old in one txn so observers never
@@ -3508,25 +3510,25 @@ export class PGLiteEngine implements BrainEngine {
                  source_id, entity_slug, fact, kind, visibility, notability, context,
                  valid_from, valid_until, source, source_session, confidence,
                  embedding, embedded_at,
-                 claim_metric, claim_value, claim_unit, claim_period
+                 claim_metric, claim_value, claim_unit, claim_period, verified_by
                ) VALUES (
                  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
                  NULL, NULL,
-                 $13, $14, $15, $16
+                 $13, $14, $15, $16, $17
                ) RETURNING id`
             : `INSERT INTO facts (
                  source_id, entity_slug, fact, kind, visibility, notability, context,
                  valid_from, valid_until, source, source_session, confidence,
                  embedding, embedded_at,
-                 claim_metric, claim_value, claim_unit, claim_period
+                 claim_metric, claim_value, claim_unit, claim_period, verified_by
                ) VALUES (
                  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
                  $13::vector, $14,
-                 $15, $16, $17, $18
+                 $15, $16, $17, $18, $19
                ) RETURNING id`,
           embedStr === null
-            ? [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, claimMetric, claimValue, claimUnit, claimPeriod]
-            : [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, embedStr, embeddedAt, claimMetric, claimValue, claimUnit, claimPeriod],
+            ? [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, claimMetric, claimValue, claimUnit, claimPeriod, verifiedBy]
+            : [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, embedStr, embeddedAt, claimMetric, claimValue, claimUnit, claimPeriod, verifiedBy],
         );
         const newId = ins.rows[0].id;
         await tx.query(
@@ -3545,25 +3547,25 @@ export class PGLiteEngine implements BrainEngine {
              source_id, entity_slug, fact, kind, visibility, notability, context,
              valid_from, valid_until, source, source_session, confidence,
              embedding, embedded_at,
-             claim_metric, claim_value, claim_unit, claim_period
+             claim_metric, claim_value, claim_unit, claim_period, verified_by
            ) VALUES (
              $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
              NULL, NULL,
-             $13, $14, $15, $16
+             $13, $14, $15, $16, $17
            ) RETURNING id`
         : `INSERT INTO facts (
              source_id, entity_slug, fact, kind, visibility, notability, context,
              valid_from, valid_until, source, source_session, confidence,
              embedding, embedded_at,
-             claim_metric, claim_value, claim_unit, claim_period
+             claim_metric, claim_value, claim_unit, claim_period, verified_by
            ) VALUES (
              $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
              $13::vector, $14,
-             $15, $16, $17, $18
+             $15, $16, $17, $18, $19
            ) RETURNING id`,
       embedStr === null
-        ? [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, claimMetric, claimValue, claimUnit, claimPeriod]
-        : [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, embedStr, embeddedAt, claimMetric, claimValue, claimUnit, claimPeriod],
+        ? [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, claimMetric, claimValue, claimUnit, claimPeriod, verifiedBy]
+        : [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, embedStr, embeddedAt, claimMetric, claimValue, claimUnit, claimPeriod, verifiedBy],
     );
     return { id: ins.rows[0].id, status: 'inserted' };
   }
@@ -3611,6 +3613,8 @@ export class PGLiteEngine implements BrainEngine {
         const claimPeriod = input.claim_period ?? null;
         // v0.40.2.0 — event_type column (Commit 1 migration v89).
         const eventType   = input.event_type   ?? null;
+        // PR-5 / W5.1 — verifier receipt id (parity with the scalar insertFact path).
+        const verifiedBy  = input.verified_by  ?? null;
 
         // Param-positional dispatch: embedStr presence shifts the trailing
         // slots by one. Order of named slots stays stable across both
@@ -3624,13 +3628,13 @@ export class PGLiteEngine implements BrainEngine {
                  embedding, embedded_at,
                  row_num, source_markdown_slug,
                  claim_metric, claim_value, claim_unit, claim_period,
-                 event_type
+                 event_type, verified_by
                ) VALUES (
                  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
                  NULL, $13,
                  $14, $15,
                  $16, $17, $18, $19,
-                 $20
+                 $20, $21
                ) RETURNING id`
             : `INSERT INTO facts (
                  source_id, entity_slug, fact, kind, visibility, notability, context,
@@ -3638,17 +3642,17 @@ export class PGLiteEngine implements BrainEngine {
                  embedding, embedded_at,
                  row_num, source_markdown_slug,
                  claim_metric, claim_value, claim_unit, claim_period,
-                 event_type
+                 event_type, verified_by
                ) VALUES (
                  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
                  $13::vector, $14,
                  $15, $16,
                  $17, $18, $19, $20,
-                 $21
+                 $21, $22
                ) RETURNING id`,
           embedStr === null
-            ? [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, embeddedAt, input.row_num, input.source_markdown_slug, claimMetric, claimValue, claimUnit, claimPeriod, eventType]
-            : [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, embedStr, embeddedAt, input.row_num, input.source_markdown_slug, claimMetric, claimValue, claimUnit, claimPeriod, eventType],
+            ? [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, embeddedAt, input.row_num, input.source_markdown_slug, claimMetric, claimValue, claimUnit, claimPeriod, eventType, verifiedBy]
+            : [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, embedStr, embeddedAt, input.row_num, input.source_markdown_slug, claimMetric, claimValue, claimUnit, claimPeriod, eventType, verifiedBy],
         );
         out.push(ins.rows[0].id);
       }
@@ -3663,6 +3667,10 @@ export class PGLiteEngine implements BrainEngine {
     opts?: { excludeSourcePrefixes?: string[] },
   ): Promise<{ deleted: number }> {
     const prefixes = opts?.excludeSourcePrefixes;
+    // PR-5 / W5.3 (Stage 5, protected-source carve-out): a VERIFIED fact (verified_by set by
+    // the Gate 2 write) is NEVER wiped by a page re-sync — `verified_by IS NOT NULL` survives
+    // every `deleteFactsForPage` so gate-written provenance persists across `gbrain sync`. An
+    // unverified control row on the same page is still wiped. Parity with postgres-engine.
     if (prefixes && prefixes.length > 0) {
       // #1928: keep rows whose `source` matches an excluded prefix (e.g.
       // `cli:` conversation facts). COALESCE so NULL/empty-source fence rows
@@ -3671,13 +3679,14 @@ export class PGLiteEngine implements BrainEngine {
       const result = await this.db.query(
         `DELETE FROM facts
            WHERE source_id = $1 AND source_markdown_slug = $2
+             AND verified_by IS NULL
              AND NOT (COALESCE(source, '') LIKE ANY($3::text[]))`,
         [source_id, slug, patterns],
       );
       return { deleted: result.affectedRows ?? 0 };
     }
     const result = await this.db.query(
-      `DELETE FROM facts WHERE source_id = $1 AND source_markdown_slug = $2`,
+      `DELETE FROM facts WHERE source_id = $1 AND source_markdown_slug = $2 AND verified_by IS NULL`,
       [source_id, slug],
     );
     return { deleted: result.affectedRows ?? 0 };
