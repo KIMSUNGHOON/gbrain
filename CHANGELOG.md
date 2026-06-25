@@ -2,6 +2,16 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.44.0] - 2026-06-25
+
+**Stage 3 of the verifier substrate: a world-visibility (shared-scope) write now requires a verifier PASS — enforced at the one place every remote transport funnels through.** The receipt carrier and honor-time plumbing landed in 0.42.43.0; this turns them load-bearing. When a remote caller asks to write a fact with `visibility: 'world'` — a promotion from personal to shared scope — the dispatcher now requires BOTH the `shared_write` capability AND a server-verified PASS verdict before the operation handler runs; otherwise the write is refused with zero side-effect. The verdict is resolved server-side from a deposited receipt and is never trusted from the request, so a writer cannot vouch for its own work. Private writes and trusted local CLI use are unchanged.
+
+### Added
+- **Gate 1 — boundary authorization for promotion-class writes.** A remote mutating write with `visibility: 'world'` requires `shared_write` (a non-admin-implied capability — admin does not grant it) AND a verifier PASS verdict. The check runs in the shared dispatcher, before the handler, so it fires identically on every remote transport (stdio, OAuth-HTTP, legacy-HTTP). Fail-closed: a missing or non-pass verdict refuses the write. The capability check distinguishes the same op's world-write from its private-write, so private writes are never gated.
+- **`resolveWriteScope`** — write-side source-authority resolution (the parallel of the existing read-side resolver). A remote caller cannot target a source it has no write authority over; an explicit cross-source write is refused.
+
+### To take advantage of v0.42.44.0
+`gbrain upgrade`. No change to private writes or local CLI use. Promoting a fact to shared (`visibility: 'world'`) scope now requires a client granted `shared_write` plus a verifier PASS receipt for that write — grant the capability and wire a verifier when you want cross-scope promotion. Until then, world-visibility writes from remote clients are refused (fail-closed), which is the enforcement working as intended.
 ## [0.42.43.0] - 2026-06-25
 
 **Verifier substrate, stages 1–2: gbrain can now carry a tamper-evident proof that a write was verified, and the per-operation scope check finally runs on every transport — not just over HTTP.** This is foundational plumbing for a verifier-gated write path (the enforcing Gate lands in a follow-up); on its own it changes no write behavior. Three pieces ship together. An immutable, content-addressed receipt store records the identity of a verification output. Honor-time resolution binds a presented receipt to the *current* verifier config and the write's own identity before a verdict is ever trusted — and fails closed on any mismatch, so a stale, forged, or absent receipt simply yields no verdict. And the per-operation scope check moves out of the HTTP server into the shared dispatcher, so stdio, HTTP, and remote callers are all gated identically, before the handler runs. Alongside it, the auth boundary tightens: the pre-OAuth legacy bearer-token grandfather path is retired, so authentication is fail-closed by default.
